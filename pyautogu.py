@@ -1,8 +1,10 @@
 import pyautogui
+from pyautogui import ImageNotFoundException
 import time
 import subprocess
 import platform
 import logging
+import os
 from typing import Optional
 
 # 设置日志
@@ -14,6 +16,81 @@ class CursorAutomation:
         self.system = platform.system()
         self.modifier = 'command' if self.system == 'Darwin' else 'ctrl'
         self.alt_modifier = 'option' if self.system == 'Darwin' else 'alt'
+        
+        # 图像文件路径
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.dialogue_image = os.path.join(self.base_dir, 'cursor_dialogue.png')
+        self.empty_image = os.path.join(self.base_dir, 'cursor_empty.png')
+        
+        # 设置pyautogui的置信度
+        pyautogui.FAILSAFE = True
+        
+    def detect_dialog_state(self) -> str:
+        """检测当前对话框状态
+        
+        Returns:
+            str: 'dialogue' - 检测到对话框, 'empty' - 检测到空白界面, 'unknown' - 未检测到已知状态
+        """
+        try:
+            logger.info("开始图像检测...")
+            
+            # 检测是否有对话框
+            if os.path.exists(self.dialogue_image):
+                logger.info(f"正在检测对话框图像: {self.dialogue_image}")
+                try:
+                    dialogue_location = pyautogui.locateOnScreen(self.dialogue_image, confidence=0.8)
+                    logger.info(f"图像检测：检测到对话框已打开，位置: {dialogue_location}")
+                    return 'dialogue'
+                except ImageNotFoundException:
+                    logger.info("图像检测：未检测到对话框")
+                except Exception as e:
+                    logger.warning(f"对话框图像检测异常: {e}")
+            else:
+                logger.warning(f"对话框图像文件不存在: {self.dialogue_image}")
+            
+            # 检测是否是空白界面
+            if os.path.exists(self.empty_image):
+                logger.info(f"正在检测空白界面图像: {self.empty_image}")
+                try:
+                    empty_location = pyautogui.locateOnScreen(self.empty_image, confidence=0.8)
+                    logger.info(f"图像检测：检测到空白界面，位置: {empty_location}")
+                    return 'empty'
+                except ImageNotFoundException:
+                    logger.info("图像检测：未检测到空白界面")
+                except Exception as e:
+                    logger.warning(f"空白界面图像检测异常: {e}")
+            else:
+                logger.warning(f"空白界面图像文件不存在: {self.empty_image}")
+            
+            logger.info("图像检测：未检测到已知状态")
+            return 'unknown'
+            
+        except Exception as e:
+            logger.error(f"图像检测失败: {e}")
+            import traceback
+            logger.error(f"详细错误信息: {traceback.format_exc()}")
+            return 'unknown'
+    
+    def wait_for_dialog_state(self, expected_state: str, timeout: int = 10) -> bool:
+        """等待特定的对话框状态
+        
+        Args:
+            expected_state: 期望的状态 ('dialogue', 'empty')
+            timeout: 超时时间（秒）
+            
+        Returns:
+            bool: 是否检测到期望状态
+        """
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            current_state = self.detect_dialog_state()
+            if current_state == expected_state:
+                logger.info(f"成功检测到期望状态: {expected_state}")
+                return True
+            time.sleep(0.5)
+        
+        logger.warning(f"等待状态 {expected_state} 超时")
+        return False
         
     def open_cursor(self) -> bool:
         """打开Cursor应用"""
@@ -96,6 +173,12 @@ class CursorAutomation:
             skip_activation: 是否跳过激活步骤
         """
         try:
+            # 检测当前对话框状态
+            current_state = self.detect_dialog_state()
+            if current_state == 'dialogue':
+                logger.info("对话框已经打开，无需重复打开")
+                return True
+            
             # 确保Cursor是活动窗口（如果不跳过激活）
             if not skip_activation:
                 self.activate_cursor()
@@ -107,9 +190,14 @@ class CursorAutomation:
             # 发送快捷键：Command/Ctrl + I
             pyautogui.hotkey(self.modifier, 'i')
             logger.info("已发送快捷键 Command+I 打开聊天对话框")
-            time.sleep(2)  # 等待对话框打开
             
-            return True
+            # 等待对话框打开并验证
+            if self.wait_for_dialog_state('dialogue', timeout=5):
+                logger.info("对话框成功打开")
+                return True
+            else:
+                logger.warning("对话框可能未成功打开")
+                return False
             
         except Exception as e:
             logger.error(f"打开聊天对话框失败: {e}")
@@ -127,6 +215,14 @@ class CursorAutomation:
         """
         try:
             logger.info(f"开始输入文本: {text[:50]}...")
+            
+            # 检测对话框状态
+            current_state = self.detect_dialog_state()
+            if current_state != 'dialogue':
+                logger.warning(f"当前状态不是对话框状态: {current_state}，尝试重新打开对话框")
+                if not self.open_chat_dialog():
+                    logger.error("无法打开对话框，输入文本失败")
+                    return False
             
             # 等待对话框稳定
             time.sleep(1)
@@ -211,47 +307,107 @@ class CursorAutomation:
             max_retries: 最大重试次数
             skip_activation: 是否跳过激活步骤（当刚切换项目后使用）
         """
+        logger.info("=== 开始消息发送流程 ===")
+        logger.info(f"目标消息: {text[:50]}{'...' if len(text) > 50 else ''}")
+        logger.info(f"最大重试次数: {max_retries}")
+        logger.info(f"跳过激活: {skip_activation}")
+        
         for attempt in range(max_retries):
             try:
-                logger.info(f"尝试第 {attempt + 1} 次发送")
+                logger.info(f"\n--- 第 {attempt + 1} 次发送尝试 ---")
                 
-                # 1. 激活或打开Cursor（如果不跳过激活）
+                # 步骤1: 检测初始页面状态
+                logger.info("步骤1: 检测当前页面状态")
+                initial_state = self.detect_dialog_state()
+                logger.info(f"初始页面状态: {initial_state}")
+                
+                # 步骤2: 激活或打开Cursor（如果不跳过激活）
+                logger.info("步骤2: 处理Cursor窗口激活")
                 if not skip_activation:
-                    if not self.activate_cursor():
+                    logger.info("执行操作: 激活Cursor窗口")
+                    activation_result = self.activate_cursor()
+                    logger.info(f"激活结果: {'成功' if activation_result else '失败'}")
+                    if not activation_result:
+                        logger.warning("激活失败，跳过此次尝试")
                         continue
                 else:
-                    logger.info("跳过激活步骤，使用当前Cursor窗口")
+                    logger.info("执行操作: 跳过激活步骤，使用当前Cursor窗口")
                     time.sleep(2)  # 等待Cursor稳定
+                    logger.info("等待2秒让Cursor窗口稳定")
                 
-                # 2. 打开聊天对话框
-                if not self.open_chat_dialog(skip_activation=skip_activation):
+                # 步骤3: 打开聊天对话框
+                logger.info("步骤3: 打开聊天对话框")
+                pre_dialog_state = self.detect_dialog_state()
+                logger.info(f"打开对话框前的状态: {pre_dialog_state}")
+                
+                logger.info("执行操作: 调用open_chat_dialog方法")
+                dialog_result = self.open_chat_dialog(skip_activation=skip_activation)
+                logger.info(f"对话框打开结果: {'成功' if dialog_result else '失败'}")
+                
+                if dialog_result:
+                    post_dialog_state = self.detect_dialog_state()
+                    logger.info(f"打开对话框后的状态: {post_dialog_state}")
+                else:
+                    logger.warning("对话框打开失败，跳过此次尝试")
                     continue
                 
-                # 3. 输入文本
-                if not self.input_text(text):
+                # 步骤4: 输入文本
+                logger.info("步骤4: 输入文本内容")
+                pre_input_state = self.detect_dialog_state()
+                logger.info(f"输入文本前的状态: {pre_input_state}")
+                
+                logger.info(f"执行操作: 输入文本内容 (长度: {len(text)} 字符)")
+                input_result = self.input_text(text)
+                logger.info(f"文本输入结果: {'成功' if input_result else '失败'}")
+                
+                if not input_result:
+                    logger.warning("文本输入失败，跳过此次尝试")
                     continue
                 
-                # 4. 提交消息
-                if not self.submit_message():
+                # 步骤5: 提交消息
+                logger.info("步骤5: 提交消息")
+                logger.info("执行操作: 调用submit_message方法")
+                submit_result = self.submit_message()
+                logger.info(f"消息提交结果: {'成功' if submit_result else '失败'}")
+                
+                if not submit_result:
+                    logger.warning("消息提交失败，跳过此次尝试")
                     continue
                 
-                logger.info("消息发送成功！")
+                # 步骤6: 验证最终状态
+                logger.info("步骤6: 验证发送完成状态")
+                final_state = self.detect_dialog_state()
+                logger.info(f"最终页面状态: {final_state}")
+                
+                logger.info("=== 消息发送成功！===")
                 return True
                 
             except Exception as e:
-                logger.error(f"第 {attempt + 1} 次尝试失败: {e}")
+                logger.error(f"第 {attempt + 1} 次尝试发生异常: {e}")
+                import traceback
+                logger.error(f"异常详情: {traceback.format_exc()}")
                 time.sleep(2)  # 失败后等待一会儿再重试
+                logger.info(f"等待2秒后进行下一次尝试")
         
-        logger.error(f"所有 {max_retries} 次尝试都失败")
+        logger.error(f"=== 所有 {max_retries} 次尝试都失败 ===")
         return False
     
     def switch_cursor_project(self, root_path: str) -> bool:
         """切换Cursor到指定项目目录"""
         try:
-            logger.info(f"正在切换到项目: {root_path}")
+            logger.info("=== 开始切换Cursor项目 ===")
+            logger.info(f"目标项目路径: {root_path}")
+            logger.info(f"当前操作系统: {self.system}")
+            
+            # 检查目标路径是否存在
+            if os.path.exists(root_path):
+                logger.info(f"目标路径验证: 路径存在")
+            else:
+                logger.warning(f"目标路径验证: 路径不存在，但仍尝试执行")
             
             # 在终端中执行cursor命令打开指定项目
             if self.system == 'Darwin':
+                logger.info("执行方式: macOS Terminal + AppleScript")
                 # macOS: 使用Terminal执行cursor命令
                 script = f'''
                 tell application "Terminal"
@@ -259,37 +415,72 @@ class CursorAutomation:
                     do script "cursor '{root_path}'"
                 end tell
                 '''
+                logger.info("准备执行的AppleScript:")
+                logger.info(f"  - 激活Terminal应用")
+                logger.info(f"  - 执行命令: cursor '{root_path}'")
+                
+                logger.info("执行操作: 运行osascript命令")
                 result = subprocess.run(['osascript', '-e', script], 
                                        capture_output=True, text=True)
+                
+                logger.info(f"命令执行结果:")
+                logger.info(f"  - 返回码: {result.returncode}")
+                logger.info(f"  - 标准输出: {result.stdout.strip() if result.stdout.strip() else '(空)'}")
+                logger.info(f"  - 标准错误: {result.stderr.strip() if result.stderr.strip() else '(空)'}")
+                
                 if result.returncode == 0:
-                    logger.info(f"已在Terminal中执行: cursor '{root_path}'")
+                    logger.info(f"✓ 成功在Terminal中执行: cursor '{root_path}'")
+                    logger.info("等待5秒让Cursor完全加载项目...")
                     time.sleep(5)  # 增加等待时间，确保Cursor完全加载项目
+                    logger.info("=== Cursor项目切换完成 ===")
                     return True
                 else:
-                    logger.error(f"Terminal脚本执行失败: {result.stderr}")
+                    logger.error(f"✗ Terminal脚本执行失败")
+                    logger.error(f"错误详情: {result.stderr}")
                     return False
             else:
+                logger.info("执行方式: 直接执行cursor命令")
                 # Windows/Linux: 直接执行cursor命令
                 try:
-                    result = subprocess.run(['cursor', root_path], 
+                    command = ['cursor', root_path]
+                    logger.info(f"准备执行命令: {' '.join(command)}")
+                    logger.info(f"命令超时设置: 10秒")
+                    
+                    logger.info("执行操作: 运行cursor命令")
+                    result = subprocess.run(command, 
                                            capture_output=True, text=True, timeout=10)
+                    
+                    logger.info(f"命令执行结果:")
+                    logger.info(f"  - 返回码: {result.returncode}")
+                    logger.info(f"  - 标准输出: {result.stdout.strip() if result.stdout.strip() else '(空)'}")
+                    logger.info(f"  - 标准错误: {result.stderr.strip() if result.stderr.strip() else '(空)'}")
+                    
                     if result.returncode == 0:
-                        logger.info(f"已执行: cursor {root_path}")
+                        logger.info(f"✓ 成功执行: cursor {root_path}")
+                        logger.info("等待5秒让Cursor完全加载项目...")
                         time.sleep(5)  # 增加等待时间，确保Cursor完全加载项目
+                        logger.info("=== Cursor项目切换完成 ===")
                         return True
                     else:
-                        logger.error(f"cursor命令执行失败: {result.stderr}")
+                        logger.error(f"✗ cursor命令执行失败")
+                        logger.error(f"错误详情: {result.stderr}")
                         return False
                 except subprocess.TimeoutExpired:
-                    logger.info(f"cursor命令已启动（超时但可能成功）: {root_path}")
+                    logger.warning("⚠ cursor命令执行超时（10秒），但可能已成功启动")
+                    logger.info("等待5秒让Cursor完全加载项目...")
                     time.sleep(5)  # 增加等待时间
+                    logger.info("=== Cursor项目切换完成（超时但可能成功）===")
                     return True
                 except FileNotFoundError:
-                    logger.error("cursor命令未找到，请确保Cursor CLI已安装")
+                    logger.error("✗ cursor命令未找到")
+                    logger.error("请确保Cursor CLI已正确安装并添加到PATH环境变量")
                     return False
                     
         except Exception as e:
-            logger.error(f"切换项目失败: {e}")
+            logger.error(f"=== 切换项目发生异常 ===")
+            logger.error(f"异常信息: {e}")
+            import traceback
+            logger.error(f"异常详情: {traceback.format_exc()}")
             return False
 
 # 使用示例
