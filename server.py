@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, static_folder='frontend/build')
 CORS(app)
 
+# 全局变量：当前暂存的workspace_id
+current_workspace_id = None
+
 ################################################################################
 # Cursor storage roots
 ################################################################################
@@ -145,8 +148,10 @@ def iter_chat_from_item_table(db: pathlib.Path) -> Iterable[tuple[str,str,str,st
         logger.debug(f"Database error in ItemTable with {db}: {e}")
         return
     finally:
-        if 'con' in locals():
+        try:
             con.close()
+        except (NameError, UnboundLocalError):
+            pass
 
 def iter_composer_data(db: pathlib.Path) -> Iterable[tuple[str,dict,str]]:
     """Yield (composerId, composerData, db_path) from cursorDiskKV table."""
@@ -370,15 +375,17 @@ def workspace_info(db: pathlib.Path):
         proj = {"name": "(unknown)", "rootPath": "(unknown)"}
         comp_meta = {}
     finally:
-        if 'con' in locals():
+        try:
             con.close()
+        except (NameError, UnboundLocalError):
+            pass
             
     return proj, comp_meta
 
 ################################################################################
 # GlobalStorage
 ################################################################################
-def global_storage_path(base: pathlib.Path) -> pathlib.Path:
+def global_storage_path(base: pathlib.Path) -> pathlib.Path | None:
     """Return path to the global storage state.vscdb."""
     global_db = base / "User" / "globalStorage" / "state.vscdb"
     if global_db.exists():
@@ -722,7 +729,7 @@ def format_chat_for_frontend(chat):
                 current_name == '(unknown)' or 
                 current_name == 'Root' or
                 # Check if rootPath is directly under /Users/username with no additional path components
-                (project.get('rootPath').startswith(f'/Users/{username}') and 
+                (project.get('rootPath') and project.get('rootPath').startswith(f'/Users/{username}') and 
                  project.get('rootPath').count('/') <= 3)):
                 
                 # Try to extract a better name from the path
@@ -736,7 +743,7 @@ def format_chat_for_frontend(chat):
                     
                     logger.debug(f"Improved project name from '{current_name}' to '{project_name}'")
                     project['name'] = project_name
-                elif project.get('rootPath').startswith(f'/Users/{username}/Documents/codebase/'):
+                elif project.get('rootPath') and project.get('rootPath').startswith(f'/Users/{username}/Documents/codebase/'):
                     # Special case for /Users/saharmor/Documents/codebase/X
                     parts = project.get('rootPath').split('/')
                     if len(parts) > 5:  # /Users/username/Documents/codebase/X
@@ -834,6 +841,80 @@ def get_chat(session_id):
     except Exception as e:
         logger.error(f"Error in get_chat: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/send-to-cursor', methods=['POST'])
+def send_to_cursor():
+    """发送消息到Cursor应用"""
+    global current_workspace_id
+    
+    try:
+        logger.info(f"Received send-to-cursor request from {request.remote_addr}")
+        
+        # 获取请求数据
+        data = request.get_json()
+        if not data or 'message' not in data:
+            return jsonify({"error": "Missing 'message' field in request"}), 400
+        
+        message = data['message'].strip()
+        if not message:
+            return jsonify({"error": "Message cannot be empty"}), 400
+        
+        # 获取workspace_id和rootPath
+        workspace_id = data.get('workspace_id')
+        root_path = data.get('rootPath')
+        
+        logger.info(f"Attempting to send message to Cursor: {message[:100]}...")
+        logger.info(f"Workspace ID: {workspace_id}, Root Path: {root_path}")
+        logger.info(f"Current workspace ID: {current_workspace_id}")
+        
+        # 检查pyautogui模块是否可用
+        try:
+            import sys
+            import os
+            # 添加当前目录到Python路径
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            if current_dir not in sys.path:
+                sys.path.insert(0, current_dir)
+            from pyautogu import receive_from_app
+            from pyautogu import switch_cursor_project
+        except ImportError as e:
+            logger.error(f"pyautogu module not available: {e}")
+            return jsonify({"error": "Cursor automation not available. Please ensure pyautogu.py is properly configured."}), 500
+        
+        # 检查workspace_id是否与当前暂存的一致
+        project_switched = False
+        if workspace_id and workspace_id != current_workspace_id:
+            logger.info(f"Workspace changed from {current_workspace_id} to {workspace_id}")
+            
+            # 如果有rootPath，则切换到目标项目
+            if root_path:
+                logger.info(f"Switching to project: {root_path}")
+                switch_success = switch_cursor_project(root_path)
+                if not switch_success:
+                    logger.error(f"Failed to switch to project: {root_path}")
+                    return jsonify({"error": f"Failed to switch to project: {root_path}"}), 500
+                
+                # 更新当前workspace_id
+                current_workspace_id = workspace_id
+                logger.info(f"Successfully switched to workspace: {workspace_id}")
+                project_switched = True
+            else:
+                logger.warning("Workspace ID provided but no rootPath available for switching")
+        
+        # 调用pyautogui发送消息到Cursor
+        # 如果刚切换了项目，跳过激活步骤避免重复操作
+        success = receive_from_app(message, skip_activation=project_switched)
+        
+        if success:
+            logger.info("Message successfully sent to Cursor")
+            return jsonify({"success": True, "message": "Message sent to Cursor successfully"})
+        else:
+            logger.error("Failed to send message to Cursor")
+            return jsonify({"error": "Failed to send message to Cursor. Please ensure Cursor is running and accessible."}), 500
+            
+    except Exception as e:
+        logger.error(f"Error in send_to_cursor: {e}", exc_info=True)
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 @app.route('/api/chat/<session_id>/export', methods=['GET'])
 def export_chat(session_id):
@@ -1013,9 +1094,11 @@ def generate_standalone_html(chat):
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve_react(path):
-    if path and Path(app.static_folder, path).exists():
+    if path and app.static_folder and Path(app.static_folder, path).exists():
         return send_from_directory(app.static_folder, path)
-    return send_from_directory(app.static_folder, 'index.html')
+    if app.static_folder:
+        return send_from_directory(app.static_folder, 'index.html')
+    return "Static folder not configured", 404
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run the Cursor Chat View server')

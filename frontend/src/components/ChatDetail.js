@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
@@ -25,6 +25,8 @@ import {
   RadioGroup,
   FormControl,
   FormLabel,
+  TextField,
+  IconButton,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import FolderIcon from '@mui/icons-material/Folder';
@@ -36,6 +38,7 @@ import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import DataObjectIcon from '@mui/icons-material/DataObject';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import WarningIcon from '@mui/icons-material/Warning';
+import SendIcon from '@mui/icons-material/Send';
 import { colors } from '../App';
 
 const ChatDetail = () => {
@@ -47,6 +50,9 @@ const ChatDetail = () => {
   const [formatDialogOpen, setFormatDialogOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState('html');
   const [dontShowExportWarning, setDontShowExportWarning] = useState(false);
+  const [inputText, setInputText] = useState('');
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef(null);
 
   useEffect(() => {
     const fetchChat = async () => {
@@ -71,6 +77,13 @@ const ChatDetail = () => {
       setDontShowExportWarning(warningPreference.split('=')[1] === 'true');
     }
   }, [sessionId]);
+
+  // 自动滚动到对话底部
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chat]);
 
   // Handle format dialog selection
   const handleFormatDialogOpen = () => {
@@ -155,6 +168,38 @@ const ChatDetail = () => {
     } catch (err) {
       console.error('Export failed:', err);
       alert('Failed to export chat – check console for details');
+    }
+  };
+
+  // 发送消息到Cursor
+  const handleSendMessage = async () => {
+    if (!inputText.trim() || sending) return;
+    
+    setSending(true);
+    try {
+      // 携带workspace_id和rootPath参数
+      const payload = {
+        message: inputText.trim(),
+        workspace_id: chat?.workspace_id,
+        rootPath: chat?.project?.rootPath
+      };
+      
+      await axios.post('/api/send-to-cursor', payload);
+      setInputText('');
+      alert('消息已发送到Cursor！');
+    } catch (err) {
+      console.error('发送失败:', err);
+      alert('发送失败，请检查后端服务是否正常运行');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // 处理回车键发送
+  const handleKeyPress = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      handleSendMessage();
     }
   };
 
@@ -474,10 +519,71 @@ const ChatDetail = () => {
               </Paper>
             </Box>
           ))}
+          {/* 滚动锚点 */}
+          <div ref={messagesEndRef} />
         </Box>
       )}
+      
+      {/* 固定在底部的输入框 */}
+      <Paper
+        elevation={3}
+        sx={{
+          position: 'fixed',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          p: 2,
+          backgroundColor: 'background.paper',
+          borderTop: '1px solid',
+          borderColor: 'divider',
+          zIndex: 1000
+        }}
+      >
+        <Container>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
+            <TextField
+              fullWidth
+              multiline
+              maxRows={4}
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onKeyPress={handleKeyPress}
+              placeholder="输入消息发送到Cursor..."
+              variant="outlined"
+              size="small"
+              disabled={sending}
+              sx={{
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: 2,
+                }
+              }}
+            />
+            <IconButton
+              onClick={handleSendMessage}
+              disabled={!inputText.trim() || sending}
+              color="primary"
+              sx={{
+                bgcolor: colors.highlightColor,
+                color: 'white',
+                '&:hover': {
+                  bgcolor: alpha(colors.highlightColor, 0.8),
+                },
+                '&:disabled': {
+                  bgcolor: 'action.disabled',
+                  color: 'action.disabled'
+                }
+              }}
+            >
+              <SendIcon />
+            </IconButton>
+          </Box>
+        </Container>
+      </Paper>
+      
+      {/* 为固定输入框留出空间 */}
+      <Box sx={{ height: '80px' }} />
     </Container>
   );
 };
 
-export default ChatDetail; 
+export default ChatDetail;
