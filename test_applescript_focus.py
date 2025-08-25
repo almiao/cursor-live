@@ -106,9 +106,9 @@ def is_cursor_app(app_name, window_title):
     判断是否为Cursor应用
     """
     # Cursor可能显示为Electron或Cursor
-    if app_name in ["Cursor", "Electron"]:
+    if app_name in ["Cursor"]:
         # 检查窗口标题是否包含Cursor相关信息
-        cursor_indicators = ["cursor-live", "service-agent", ".java", ".py", ".js", ".ts", ".md"]
+        cursor_indicators = [ ".java", ".py", ".js", ".ts", ".md"]
         return any(indicator in window_title.lower() for indicator in cursor_indicators)
     return False
 

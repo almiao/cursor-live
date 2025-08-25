@@ -201,100 +201,80 @@ def workspaces(base: pathlib.Path):
 def extract_project_name_from_path(root_path, debug=False):
     """
     Extract a project name from a path, skipping user directories.
+    This function is designed to be cross-platform.
     """
-    if not root_path or root_path == '/':
+    if not root_path or root_path in ('/', '\\'):
         return "Root"
-        
-    path_parts = [p for p in root_path.split('/') if p]
     
-    # Skip common user directory patterns
+    # Normalize the path and split into parts
+    try:
+        p = pathlib.Path(root_path)
+        path_parts = [part for part in p.parts if part and part != p.drive]
+    except Exception as e:
+        logger.debug(f"Could not parse path with pathlib: {e}. Falling back to string split.")
+        # Fallback for unusual paths
+        root_path = root_path.replace('\\', '/').strip('/')
+        path_parts = [part for part in root_path.split('/') if part]
+
+    if not path_parts:
+        return "Root"
+
+    # Get home directory and current username
+    home_dir = pathlib.Path.home()
+    current_username = home_dir.name
+
+    # Check if the path is within the user's home directory
+    is_in_home = False
+    try:
+        is_in_home = p.is_relative_to(home_dir)
+    except (ValueError, TypeError): # In Python < 3.9 is_relative_to doesn't exist
+        try:
+            home_dir.joinpath(p.relative_to(home_dir))
+            is_in_home = True
+        except ValueError:
+            is_in_home = False
+
+
+    # If it's just the home directory, return "Home Directory"
+    if p == home_dir:
+        return "Home Directory"
+
     project_name = None
-    home_dir_patterns = ['Users', 'home']
+
+    # Define known project markers
+    known_project_markers = ['.git', 'pyproject.toml', 'package.json', 'go.mod', 'Cargo.toml']
     
-    # Get current username for comparison
-    current_username = os.path.basename(os.path.expanduser('~'))
-    
-    # Find user directory in path
-    username_index = -1
-    for i, part in enumerate(path_parts):
-        if part in home_dir_patterns:
-            username_index = i + 1
+    # Check for project markers in the path
+    for i in range(len(path_parts) - 1, -1, -1):
+        current_path = p.parents[len(p.parents) - i -1]
+        if any((current_path / marker).exists() for marker in known_project_markers):
+            project_name = path_parts[i]
+            if debug:
+                logger.debug(f"Found project marker, setting project name to: {project_name}")
             break
     
-    # If this is just /Users/username with no deeper path, don't use username as project
-    if username_index >= 0 and username_index < len(path_parts) and path_parts[username_index] == current_username:
-        if len(path_parts) <= username_index + 1:
-            return "Home Directory"
-    
-    if username_index >= 0 and username_index + 1 < len(path_parts):
-        # First try specific project directories we know about by name
-        known_projects = ['genaisf', 'cursor-view', 'cursor', 'cursor-apps', 'universal-github', 'inquiry']
+    # If no marker found, use heuristics
+    if not project_name:
+        # Use the last part of the path as a candidate
+        candidate = path_parts[-1]
         
-        # Look at the most specific/deepest part of the path first
-        for i in range(len(path_parts)-1, username_index, -1):
-            if path_parts[i] in known_projects:
-                project_name = path_parts[i]
-                if debug:
-                    logger.debug(f"Found known project name from specific list: {project_name}")
-                break
+        # Avoid common non-project directory names
+        non_project_dirs = ['Documents', 'Projects', 'Code', 'workspace', 'repos', 'git', 'src', 'codebase', 'Downloads', 'Desktop', 'Library', 'Applications', 'System', 'var', 'opt', 'tmp']
         
-        # If no known project found, use the last part of the path as it's likely the project directory
-        if not project_name and len(path_parts) > username_index + 1:
-            # Check if we have a structure like /Users/username/Documents/codebase/project_name
-            if 'Documents' in path_parts and 'codebase' in path_parts:
-                doc_index = path_parts.index('Documents')
-                codebase_index = path_parts.index('codebase')
-                
-                # If there's a path component after 'codebase', use that as the project name
-                if codebase_index + 1 < len(path_parts):
-                    project_name = path_parts[codebase_index + 1]
-                    if debug:
-                        logger.debug(f"Found project name in Documents/codebase structure: {project_name}")
-            
-            # If no specific structure found, use the last component of the path
-            if not project_name:
-                project_name = path_parts[-1]
-                if debug:
-                    logger.debug(f"Using last path component as project name: {project_name}")
-        
-        # Skip username as project name
-        if project_name == current_username:
-            project_name = 'Home Directory'
+        if candidate not in non_project_dirs and candidate != current_username:
+            project_name = candidate
             if debug:
-                logger.debug(f"Avoided using username as project name")
-        
-        # Skip common project container directories
-        project_containers = ['Documents', 'Projects', 'Code', 'workspace', 'repos', 'git', 'src', 'codebase']
-        if project_name in project_containers:
-            # Don't use container directories as project names
-            # Try to use the next component if available
-            container_index = path_parts.index(project_name)
-            if container_index + 1 < len(path_parts):
-                project_name = path_parts[container_index + 1]
-                if debug:
-                    logger.debug(f"Skipped container dir, using next component as project name: {project_name}")
-        
-        # If we still don't have a project name, use the first non-system directory after username
-        if not project_name and username_index + 1 < len(path_parts):
-            system_dirs = ['Library', 'Applications', 'System', 'var', 'opt', 'tmp']
-            for i in range(username_index + 1, len(path_parts)):
-                if path_parts[i] not in system_dirs and path_parts[i] not in project_containers:
-                    project_name = path_parts[i]
-                    if debug:
-                        logger.debug(f"Using non-system dir as project name: {project_name}")
-                    break
-    else:
-        # If not in a user directory, use the basename
-        project_name = path_parts[-1] if path_parts else "Root"
-        if debug:
-            logger.debug(f"Using basename as project name: {project_name}")
-    
-    # Final check: don't return username as project name
+                logger.debug(f"Using last path component as project name: {project_name}")
+        # If the last part is a non-project dir, try the one before it
+        elif len(path_parts) > 1 and path_parts[-2] not in non_project_dirs and path_parts[-2] != current_username:
+             project_name = path_parts[-1]
+             if debug:
+                logger.debug(f"Using last path component as project name because parent is also a project: {project_name}")
+
+    # Final check to avoid returning the username
     if project_name == current_username:
         project_name = "Home Directory"
-        if debug:
-            logger.debug(f"Final check: replaced username with 'Home Directory'")
-    
+
     return project_name if project_name else "Unknown Project"
 
 def workspace_info(db: pathlib.Path):
@@ -306,12 +286,55 @@ def workspace_info(db: pathlib.Path):
         proj = {"name": "(unknown)", "rootPath": "(unknown)"}
         ents = j(cur,"ItemTable","history.entries") or []
         
-        # Extract file paths from history entries, stripping the file:/// scheme
+        # Extract file paths from history entries, converting URIs to paths
         paths = []
         for e in ents:
             resource = e.get("editor", {}).get("resource", "")
             if resource and resource.startswith("file:///"):
-                paths.append(resource[len("file:///"):])
+                try:
+                    # Correctly handle URI to path conversion
+                    path_str = pathlib.Path(urllib.parse.unquote(resource[len("file:///"):])).as_posix()
+                    paths.append(path_str)
+                except Exception as e:
+                    logger.debug(f"Could not parse resource URI {resource}: {e}")
+
+        # If we found file paths, extract the project name using the longest common prefix
+        if paths:
+            logger.debug(f"Found {len(paths)} paths in history entries")
+            
+            # Use os.path.commonpath to handle cross-platform paths correctly
+            common_prefix = os.path.commonpath(paths)
+            logger.debug(f"Common prefix: {common_prefix}")
+            
+            if common_prefix:
+                project_root = common_prefix
+                logger.debug(f"Project root from common prefix: {project_root}")
+                
+                # Extract the project name using the helper function
+                project_name = extract_project_name_from_path(project_root, debug=True)
+                
+                proj = {"name": project_name, "rootPath": pathlib.Path(project_root).as_posix()}
+        
+        # Try backup methods if we didn't get a project name
+        if proj["name"] == "(unknown)":
+            logger.debug("Trying backup methods for project name")
+            
+            # Check debug.selectedroot as a fallback
+            selected_root = j(cur, "ItemTable", "debug.selectedroot")
+            if selected_root and isinstance(selected_root, str) and selected_root.startswith("file:///"):
+                try:
+                    path = pathlib.Path(urllib.parse.unquote(selected_root[len("file:///"):])).as_posix()
+                    if path:
+                        root_path = path
+                        logger.debug(f"Project root from debug.selectedroot: {root_path}")
+                        
+                        # Extract the project name using the helper function
+                        project_name = extract_project_name_from_path(root_path, debug=True)
+                        
+                        if project_name:
+                            proj = {"name": project_name, "rootPath": root_path}
+                except Exception as e:
+                    logger.debug(f"Could not parse selected_root URI {selected_root}: {e}")):])
         
         # If we found file paths, extract the project name using the longest common prefix
         if paths:
@@ -721,6 +744,7 @@ def format_chat_for_frontend(chat):
         
         # If project name is a username or unknown, try to extract a better name from rootPath
         if project.get('rootPath'):
+            root_path = pathlib.Path(project.get('rootPath'))
             current_name = project.get('name', '')
             username = os.path.basename(os.path.expanduser('~'))
             
@@ -728,12 +752,11 @@ def format_chat_for_frontend(chat):
             if (current_name == username or 
                 current_name == '(unknown)' or 
                 current_name == 'Root' or
-                # Check if rootPath is directly under /Users/username with no additional path components
-                (project.get('rootPath') and project.get('rootPath').startswith(f'/Users/{username}') and 
-                 project.get('rootPath').count('/') <= 3)):
+                # Check if rootPath is the user's home directory
+                (root_path.is_dir() and root_path.samefile(pathlib.Path.home()))):
                 
                 # Try to extract a better name from the path
-                project_name = extract_project_name_from_path(project.get('rootPath'), debug=False)
+                project_name = extract_project_name_from_path(str(root_path), debug=False)
                 
                 # Only use the new name if it's meaningful
                 if (project_name and 
@@ -743,24 +766,27 @@ def format_chat_for_frontend(chat):
                     
                     logger.debug(f"Improved project name from '{current_name}' to '{project_name}'")
                     project['name'] = project_name
-                elif project.get('rootPath') and project.get('rootPath').startswith(f'/Users/{username}/Documents/codebase/'):
-                    # Special case for /Users/saharmor/Documents/codebase/X
-                    parts = project.get('rootPath').split('/')
-                    if len(parts) > 5:  # /Users/username/Documents/codebase/X
-                        project['name'] = parts[5]
-                        logger.debug(f"Set project name to specific codebase subdirectory: {parts[5]}")
-                    else:
-                        project['name'] = "cursor-view"  # Current project as default
-        
+                elif 'codebase' in root_path.parts:
+                    # Special case for paths containing 'codebase'
+                    try:
+                        codebase_index = root_path.parts.index('codebase')
+                        if codebase_index + 1 < len(root_path.parts):
+                            project['name'] = root_path.parts[codebase_index + 1]
+                            logger.debug(f"Set project name to specific codebase subdirectory: {project['name']}")
+                        else:
+                            project['name'] = "cursor-view"  # Current project as default
+                    except ValueError:
+                        pass
+
         # If the project doesn't have a rootPath or it's very generic, enhance it with workspace_id
-        if not project.get('rootPath') or project.get('rootPath') == '/' or project.get('rootPath') == '/Users':
+        if not project.get('rootPath') or project.get('rootPath') in ['/', str(pathlib.Path.home().parent)]:
             if workspace_id != 'unknown':
                 # Use workspace_id to create a more specific path
                 if not project.get('rootPath'):
-                    project['rootPath'] = f"/workspace/{workspace_id}"
-                elif project.get('rootPath') == '/' or project.get('rootPath') == '/Users':
-                    project['rootPath'] = f"{project['rootPath']}/workspace/{workspace_id}"
-        
+                    project['rootPath'] = str(pathlib.Path("/workspace") / workspace_id)
+                else:
+                    project['rootPath'] = str(pathlib.Path(project.get('rootPath')) / "workspace" / workspace_id)
+
         # FALLBACK: If project name is still generic, try to extract it from git repositories
         if project.get('name') in ['Home Directory', '(unknown)']:
             git_project_name = extract_project_from_git_repos(workspace_id, debug=True)
