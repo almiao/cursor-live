@@ -84,22 +84,26 @@ def detect_cursor_focus():
         try
             set frontProcess to first application process whose frontmost is true
             set focusedElement to focused UI element of frontProcess
+            
             if focusedElement is not missing value then
                 return "HAS_FOCUS"
             else
                 return "NO_FOCUS"
             end if
-        on error
-            return "ERROR"
+        on error errMsg
+            return "ERROR|" & errMsg
         end try
     end tell
     '''
     
     try:
         result = subprocess.run(['osascript', '-e', applescript], capture_output=True, text=True, timeout=5)
-        return result.stdout.strip() if result.returncode == 0 else "SCRIPT_ERROR"
-    except:
-        return "EXCEPTION"
+        if result.returncode == 0:
+            return result.stdout.strip()
+        else:
+            return f"SCRIPT_ERROR|{result.stderr.strip()}"
+    except Exception as e:
+        return f"EXCEPTION|{str(e)}"
 
 def is_cursor_app(app_name, window_title):
     """
@@ -128,10 +132,20 @@ def print_detection_result(front_app, window_info, focus_status):
         if is_cursor_app(app_name, window_title):
             print(f"✅ 检测到Cursor应用")
             
+            # 焦点状态解析
             if focus_status == "HAS_FOCUS":
-                print(f"🎯 焦点状态: ✅ 有焦点元素")
+                print("🎯 焦点状态: ✅ 有焦点")
             elif focus_status == "NO_FOCUS":
-                print(f"🎯 焦点状态: ❌ 无焦点元素")
+                print("🎯 焦点状态: ❌ 无焦点")
+            elif focus_status.startswith("ERROR|"):
+                error_msg = focus_status.split("|", 1)[1] if "|" in focus_status else focus_status
+                print(f"🎯 焦点状态: ⚠️ 检测错误 ({error_msg})")
+            elif focus_status.startswith("SCRIPT_ERROR|"):
+                error_msg = focus_status.split("|", 1)[1] if "|" in focus_status else "未知脚本错误"
+                print(f"🎯 焦点状态: ⚠️ 脚本错误 ({error_msg})")
+            elif focus_status.startswith("EXCEPTION|"):
+                error_msg = focus_status.split("|", 1)[1] if "|" in focus_status else "未知异常"
+                print(f"🎯 焦点状态: ⚠️ 执行异常 ({error_msg})")
             else:
                 print(f"🎯 焦点状态: ⚠️ 检测失败 ({focus_status})")
         else:
