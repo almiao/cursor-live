@@ -101,10 +101,23 @@ class CursorAutomation:
             elif self.system == 'Windows':
                 # Windows: 尝试通过开始菜单或直接路径打开
                 try:
-                    subprocess.run(['start', 'cursor:'], shell=True)
-                except:
-                    # 如果上述方法失败，尝试直接路径
-                    subprocess.run(['C:\\Program Files\\Cursor\\Cursor.exe'])
+                    # This is the most reliable way if the protocol is registered
+                    subprocess.run(['start', 'cursor:'], shell=True, check=True)
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    logger.warning("Could not open Cursor via protocol, trying common paths.")
+                    # Fallback to common installation paths
+                    possible_paths = [
+                        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Cursor", "Cursor.exe"),
+                        os.path.join(os.environ.get("ProgramFiles", ""), "Cursor", "Cursor.exe"),
+                    ]
+                    for path in possible_paths:
+                        if os.path.exists(path):
+                            subprocess.run([path])
+                            logger.info(f"Found and opened Cursor at: {path}")
+                            break
+                    else:
+                        logger.error("Could not find Cursor.exe in common locations.")
+                        return False
             else:
                 # Linux
                 subprocess.run(['cursor'])
@@ -157,10 +170,28 @@ class CursorAutomation:
                         logger.warning("未找到Cursor窗口，尝试打开")
                         return self.open_cursor()
             else:
-                # Windows/Linux: 直接尝试打开Cursor应用
-                 # 注意：pyautogui的getWindowsWithTitle在某些系统上不可用
-                 logger.info("非macOS系统，直接尝试打开Cursor")
-                 return self.open_cursor()
+                # Windows/Linux: 使用pygetwindow激活
+                try:
+                    import pygetwindow as gw
+                    # 查找标题中含有"Cursor"的窗口
+                    cursor_windows = gw.getWindowsWithTitle('Cursor')
+                    if cursor_windows:
+                        # 激活第一个找到的窗口
+                        window = cursor_windows[0]
+                        if not window.isActive:
+                            window.activate()
+                        logger.info("已激活Cursor窗口")
+                        time.sleep(1)
+                        return True
+                    else:
+                        logger.warning("未找到Cursor窗口，尝试打开")
+                        return self.open_cursor()
+                except ImportError:
+                    logger.error("pygetwindow模块未安装，请运行 'pip install pygetwindow'")
+                    return self.open_cursor() # Fallback to opening
+                except Exception as e:
+                    logger.error(f"使用pygetwindow激活失败: {e}")
+                    return self.open_cursor() # Fallback to opening
                 
         except Exception as e:
             logger.error(f"激活Cursor窗口失败: {e}")
@@ -232,11 +263,13 @@ class CursorAutomation:
             
             # 方法1: 使用剪贴板（最可靠）
             try:
-                import subprocess
-                subprocess.run(['pbcopy'], input=text.encode('utf-8'))
+                import pyperclip
+                pyperclip.copy(text)
                 pyautogui.hotkey(self.modifier, 'v')
                 logger.info(f"已通过剪贴板输入文本: {text[:50]}...")
                 success = True
+            except ImportError:
+                logger.warning("pyperclip模块未安装，请运行 'pip install pyperclip'")
             except Exception as e:
                 logger.warning(f"剪贴板输入失败: {e}")
             
@@ -392,6 +425,21 @@ class CursorAutomation:
         logger.error(f"=== 所有 {max_retries} 次尝试都失败 ===")
         return False
     
+    def _find_cursor_cmd_on_windows(self) -> Optional[str]:
+        """Find the path to the cursor.cmd on Windows."""
+        # Common installation directories for Cursor
+        base_paths = [
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Cursor"),
+            os.path.join(os.environ.get("ProgramFiles", ""), "Cursor"),
+        ]
+        for base in base_paths:
+            # The CLI script is typically in resources/app/bin
+            cli_path = os.path.join(base, "resources", "app", "bin", "cursor.cmd")
+            if os.path.exists(cli_path):
+                logger.info(f"Found Cursor CLI at: {cli_path}")
+                return cli_path
+        return None
+
     def switch_cursor_project(self, root_path: str) -> bool:
         """切换Cursor到指定项目目录"""
         try:
@@ -399,86 +447,66 @@ class CursorAutomation:
             logger.info(f"目标项目路径: {root_path}")
             logger.info(f"当前操作系统: {self.system}")
             
-            # 检查目标路径是否存在
-            if os.path.exists(root_path):
-                logger.info(f"目标路径验证: 路径存在")
-            else:
-                logger.warning(f"目标路径验证: 路径不存在，但仍尝试执行")
+            if not os.path.exists(root_path):
+                logger.warning(f"目标路径不存在: {root_path}")
+                # Still try to proceed, as Cursor might handle it
             
-            # 在终端中执行cursor命令打开指定项目
             if self.system == 'Darwin':
                 logger.info("执行方式: macOS Terminal + AppleScript")
-                # macOS: 使用Terminal执行cursor命令
                 script = f'''
                 tell application "Terminal"
                     activate
                     do script "cursor '{root_path}'"
                 end tell
                 '''
-                logger.info("准备执行的AppleScript:")
-                logger.info(f"  - 激活Terminal应用")
-                logger.info(f"  - 执行命令: cursor '{root_path}'")
-                
-                logger.info("执行操作: 运行osascript命令")
-                result = subprocess.run(['osascript', '-e', script], 
-                                       capture_output=True, text=True)
-                
-                logger.info(f"命令执行结果:")
-                logger.info(f"  - 返回码: {result.returncode}")
-                logger.info(f"  - 标准输出: {result.stdout.strip() if result.stdout.strip() else '(空)'}")
-                logger.info(f"  - 标准错误: {result.stderr.strip() if result.stderr.strip() else '(空)'}")
-                
+                result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
                 if result.returncode == 0:
                     logger.info(f"✓ 成功在Terminal中执行: cursor '{root_path}'")
-                    logger.info("等待5秒让Cursor完全加载项目...")
-                    time.sleep(5)  # 增加等待时间，确保Cursor完全加载项目
-                    logger.info("=== Cursor项目切换完成 ===")
+                    time.sleep(5)
                     return True
                 else:
-                    logger.error(f"✗ Terminal脚本执行失败")
-                    logger.error(f"错误详情: {result.stderr}")
+                    logger.error(f"✗ Terminal脚本执行失败: {result.stderr}")
                     return False
             else:
-                logger.info("执行方式: 直接执行cursor命令")
-                # Windows/Linux: 直接执行cursor命令
+                # Windows/Linux
+                command = ['cursor', root_path]
                 try:
-                    command = ['cursor', root_path]
-                    logger.info(f"准备执行命令: {' '.join(command)}")
-                    logger.info(f"命令超时设置: 10秒")
-                    
-                    logger.info("执行操作: 运行cursor命令")
-                    result = subprocess.run(command, 
-                                           capture_output=True, text=True, timeout=10)
-                    
-                    logger.info(f"命令执行结果:")
-                    logger.info(f"  - 返回码: {result.returncode}")
-                    logger.info(f"  - 标准输出: {result.stdout.strip() if result.stdout.strip() else '(空)'}")
-                    logger.info(f"  - 标准错误: {result.stderr.strip() if result.stderr.strip() else '(空)'}")
-                    
-                    if result.returncode == 0:
-                        logger.info(f"✓ 成功执行: cursor {root_path}")
-                        logger.info("等待5秒让Cursor完全加载项目...")
-                        time.sleep(5)  # 增加等待时间，确保Cursor完全加载项目
-                        logger.info("=== Cursor项目切换完成 ===")
-                        return True
-                    else:
-                        logger.error(f"✗ cursor命令执行失败")
-                        logger.error(f"错误详情: {result.stderr}")
+                    # First, try with 'cursor' directly (from PATH)
+                    result = subprocess.run(command, capture_output=True, text=True, timeout=15, shell=False)
+                    if result.returncode != 0:
+                        raise FileNotFoundError # Treat non-zero exit as "not found" to trigger fallback
+                except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                    if isinstance(e, subprocess.TimeoutExpired):
+                         logger.warning("`cursor` command timed out. Assuming it worked.")
+                         time.sleep(5)
+                         return True
+
+                    logger.warning(f"`cursor` command failed or not in PATH. Searching common locations...")
+                    if self.system == 'Windows':
+                        cursor_cmd = self._find_cursor_cmd_on_windows()
+                        if not cursor_cmd:
+                            logger.error("✗ cursor.cmd not found. Please add Cursor's bin directory to your PATH.")
+                            return False
+                        command = [cursor_cmd, root_path]
+                        # Retry with the full path
+                        try:
+                            subprocess.run(command, timeout=15, shell=True) # shell=True for .cmd
+                            logger.info(f"✓ 成功执行: {' '.join(command)}")
+                            time.sleep(5)
+                            return True
+                        except Exception as final_e:
+                            logger.error(f"✗ 执行cursor.cmd失败: {final_e}")
+                            return False
+                    else: # Linux
+                        logger.error("✗ 'cursor' command not found. Please add it to your PATH.")
                         return False
-                except subprocess.TimeoutExpired:
-                    logger.warning("⚠ cursor命令执行超时（10秒），但可能已成功启动")
-                    logger.info("等待5秒让Cursor完全加载项目...")
-                    time.sleep(5)  # 增加等待时间
-                    logger.info("=== Cursor项目切换完成（超时但可能成功）===")
-                    return True
-                except FileNotFoundError:
-                    logger.error("✗ cursor命令未找到")
-                    logger.error("请确保Cursor CLI已正确安装并添加到PATH环境变量")
-                    return False
+
+                logger.info(f"✓ 成功执行: {' '.join(command)}")
+                time.sleep(5)
+                return True
                     
         except Exception as e:
-            logger.error(f"=== 切换项目发生异常 ===")
-            logger.error(f"异常信息: {e}")
+            logger.error(f"=== 切换项目发生异常: {e} ===")
             import traceback
             logger.error(f"异常详情: {traceback.format_exc()}")
             return False
