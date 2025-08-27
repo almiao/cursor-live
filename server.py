@@ -12,8 +12,6 @@ import platform
 import sqlite3
 import argparse
 import pathlib
-import urllib.parse
-import subprocess
 from collections import defaultdict
 from typing import Dict, Any, Iterable
 from pathlib import Path
@@ -151,8 +149,11 @@ def iter_chat_from_item_table(db: pathlib.Path) -> Iterable[tuple[str,str,str,st
         logger.debug(f"Database error in ItemTable with {db}: {e}")
         return
     finally:
-        if 'con' in locals() and con is not None:
-            con.close()
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
 
 def iter_composer_data(db: pathlib.Path) -> Iterable[tuple[str,dict,str]]:
     """Yield (composerId, composerData, db_path) from cursorDiskKV table."""
@@ -163,31 +164,30 @@ def iter_composer_data(db: pathlib.Path) -> Iterable[tuple[str,dict,str]]:
         # Check if table exists
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cursorDiskKV'")
         if not cur.fetchone():
+            con.close()
             return
         
         cur.execute("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
-        
-        db_path_str = str(db)
-        
-        for k, v in cur.fetchall():
-            try:
-                if v is None:
-                    continue
-                    
-                composer_data = json.loads(v)
-                composer_id = k.split(":")[1]
-                yield composer_id, composer_data, db_path_str
-                
-            except Exception as e:
-                logger.debug(f"Failed to parse composer data for key {k}: {e}")
-                continue
-                
     except sqlite3.DatabaseError as e:
         logger.debug(f"Database error with {db}: {e}")
         return
-    finally:
-        if con:
-            con.close()
+    
+    db_path_str = str(db)
+    
+    for k, v in cur.fetchall():
+        try:
+            if v is None:
+                continue
+                
+            composer_data = json.loads(v)
+            composer_id = k.split(":")[1]
+            yield composer_id, composer_data, db_path_str
+            
+        except Exception as e:
+            logger.debug(f"Failed to parse composer data for key {k}: {e}")
+            continue
+    
+    con.close()
 
 ################################################################################
 # Workspace discovery
@@ -204,93 +204,100 @@ def workspaces(base: pathlib.Path):
 def extract_project_name_from_path(root_path, debug=False):
     """
     Extract a project name from a path, skipping user directories.
-    This function is designed to be cross-platform.
     """
-    if not root_path or root_path in ('/', '\\'):
+    if not root_path or root_path == '/':
         return "Root"
+        
+    path_parts = [p for p in root_path.split('/') if p]
     
-    # Initialize variables
-    p = None
-    path_parts = []
-    
-    # Normalize the path and split into parts
-    try:
-        p = pathlib.Path(root_path)
-        path_parts = [part for part in p.parts if part and part != p.drive]
-    except Exception as e:
-        logger.debug(f"Could not parse path with pathlib: {e}. Falling back to string split.")
-        # Fallback for unusual paths
-        root_path = root_path.replace('\\', '/').strip('/')
-        path_parts = [part for part in root_path.split('/') if part]
-        # Create a Path object for fallback case
-        try:
-            p = pathlib.Path('/' + '/'.join(path_parts))
-        except Exception:
-            p = pathlib.Path('.')
-
-    if not path_parts:
-        return "Root"
-
-    # Get home directory and current username
-    home_dir = pathlib.Path.home()
-    current_username = home_dir.name
-
-    # Check if the path is within the user's home directory
-    is_in_home = False
-    if p is not None:
-        try:
-            is_in_home = p.is_relative_to(home_dir)
-        except (ValueError, TypeError, AttributeError): # In Python < 3.9 is_relative_to doesn't exist
-            try:
-                home_dir.joinpath(p.relative_to(home_dir))
-                is_in_home = True
-            except (ValueError, TypeError):
-                is_in_home = False
-
-    # If it's just the home directory, return "Home Directory"
-    if p is not None and p == home_dir:
-        return "Home Directory"
-
+    # Skip common user directory patterns
     project_name = None
-
-    # Define known project markers
-    known_project_markers = ['.git', 'pyproject.toml', 'package.json', 'go.mod', 'Cargo.toml']
+    home_dir_patterns = ['Users', 'home']
     
-    # Check for project markers in the path
-    if p is not None:
-        for i in range(len(path_parts) - 1, -1, -1):
-            try:
-                current_path = p.parents[len(p.parents) - i -1]
-                if any((current_path / marker).exists() for marker in known_project_markers):
+    # Get current username for comparison
+    current_username = os.path.basename(os.path.expanduser('~'))
+    
+    # Find user directory in path
+    username_index = -1
+    for i, part in enumerate(path_parts):
+        if part in home_dir_patterns:
+            username_index = i + 1
+            break
+    
+    # If this is just /Users/username with no deeper path, don't use username as project
+    if username_index >= 0 and username_index < len(path_parts) and path_parts[username_index] == current_username:
+        if len(path_parts) <= username_index + 1:
+            return "Home Directory"
+    
+    if username_index >= 0 and username_index + 1 < len(path_parts):
+        # First try specific project directories we know about by name
+        known_projects = ['genaisf', 'cursor-view', 'cursor', 'cursor-apps', 'universal-github', 'inquiry']
+        
+        # Look at the most specific/deepest part of the path first
+        for i in range(len(path_parts)-1, username_index, -1):
+            if path_parts[i] in known_projects:
+                project_name = path_parts[i]
+                if debug:
+                    logger.debug(f"Found known project name from specific list: {project_name}")
+                break
+        
+        # If no known project found, use the last part of the path as it's likely the project directory
+        if not project_name and len(path_parts) > username_index + 1:
+            # Check if we have a structure like /Users/username/Documents/codebase/project_name
+            if 'Documents' in path_parts and 'codebase' in path_parts:
+                doc_index = path_parts.index('Documents')
+                codebase_index = path_parts.index('codebase')
+                
+                # If there's a path component after 'codebase', use that as the project name
+                if codebase_index + 1 < len(path_parts):
+                    project_name = path_parts[codebase_index + 1]
+                    if debug:
+                        logger.debug(f"Found project name in Documents/codebase structure: {project_name}")
+            
+            # If no specific structure found, use the last component of the path
+            if not project_name:
+                project_name = path_parts[-1]
+                if debug:
+                    logger.debug(f"Using last path component as project name: {project_name}")
+        
+        # Skip username as project name
+        if project_name == current_username:
+            project_name = 'Home Directory'
+            if debug:
+                logger.debug(f"Avoided using username as project name")
+        
+        # Skip common project container directories
+        project_containers = ['Documents', 'Projects', 'Code', 'workspace', 'repos', 'git', 'src', 'codebase']
+        if project_name in project_containers:
+            # Don't use container directories as project names
+            # Try to use the next component if available
+            container_index = path_parts.index(project_name)
+            if container_index + 1 < len(path_parts):
+                project_name = path_parts[container_index + 1]
+                if debug:
+                    logger.debug(f"Skipped container dir, using next component as project name: {project_name}")
+        
+        # If we still don't have a project name, use the first non-system directory after username
+        if not project_name and username_index + 1 < len(path_parts):
+            system_dirs = ['Library', 'Applications', 'System', 'var', 'opt', 'tmp']
+            for i in range(username_index + 1, len(path_parts)):
+                if path_parts[i] not in system_dirs and path_parts[i] not in project_containers:
                     project_name = path_parts[i]
                     if debug:
-                        logger.debug(f"Found project marker, setting project name to: {project_name}")
+                        logger.debug(f"Using non-system dir as project name: {project_name}")
                     break
-            except (IndexError, OSError):
-                continue
+    else:
+        # If not in a user directory, use the basename
+        project_name = path_parts[-1] if path_parts else "Root"
+        if debug:
+            logger.debug(f"Using basename as project name: {project_name}")
     
-    # If no marker found, use heuristics
-    if not project_name:
-        # Use the last part of the path as a candidate
-        candidate = path_parts[-1]
-        
-        # Avoid common non-project directory names
-        non_project_dirs = ['Documents', 'Projects', 'Code', 'workspace', 'repos', 'git', 'src', 'codebase', 'Downloads', 'Desktop', 'Library', 'Applications', 'System', 'var', 'opt', 'tmp']
-        
-        if candidate not in non_project_dirs and candidate != current_username:
-            project_name = candidate
-            if debug:
-                logger.debug(f"Using last path component as project name: {project_name}")
-        # If the last part is a non-project dir, try the one before it
-        elif len(path_parts) > 1 and path_parts[-2] not in non_project_dirs and path_parts[-2] != current_username:
-             project_name = path_parts[-1]
-             if debug:
-                logger.debug(f"Using last path component as project name because parent is also a project: {project_name}")
-
-    # Final check to avoid returning the username
+    # Final check: don't return username as project name
     if project_name == current_username:
         project_name = "Home Directory"
-
+        if debug:
+            logger.debug(f"Final check: replaced username with 'Home Directory'")
+    
     return project_name if project_name else "Unknown Project"
 
 def workspace_info(db: pathlib.Path):
@@ -303,7 +310,7 @@ def workspace_info(db: pathlib.Path):
         proj = {"name": "(unknown)", "rootPath": "(unknown)"}
         ents = j(cur,"ItemTable","history.entries") or []
         
-        # Extract file paths from history entries, converting URIs to paths
+        # Extract file paths from history entries, stripping the file:/// scheme
         paths = []
         for e in ents:
             resource = e.get("editor", {}).get("resource", "")
@@ -314,71 +321,38 @@ def workspace_info(db: pathlib.Path):
         if paths:
             logger.debug(f"Found {len(paths)} paths in history entries")
             
-            # Use os.path.commonpath to handle cross-platform paths correctly
-            common_prefix = os.path.commonpath(paths)
+            # Get the longest common prefix
+            common_prefix = os.path.commonprefix(paths)
             logger.debug(f"Common prefix: {common_prefix}")
             
-            if common_prefix:
-                project_root = common_prefix
+            # Find the last directory separator in the common prefix
+            last_separator_index = common_prefix.rfind('/')
+            if last_separator_index > 0:
+                project_root = common_prefix[:last_separator_index]
                 logger.debug(f"Project root from common prefix: {project_root}")
                 
                 # Extract the project name using the helper function
                 project_name = extract_project_name_from_path(project_root, debug=True)
                 
-                proj = {"name": project_name, "rootPath": pathlib.Path(project_root).as_posix()}
+                proj = {"name": project_name, "rootPath": "/" + project_root.lstrip('/')}
         
         # Try backup methods if we didn't get a project name
         if proj["name"] == "(unknown)":
             logger.debug("Trying backup methods for project name")
             
             # Check debug.selectedroot as a fallback
-            # First try to get as JSON, then as raw string if JSON parsing fails
             selected_root = j(cur, "ItemTable", "debug.selectedroot")
-            if not selected_root:
-                # Try to get raw string value if JSON parsing failed
-                cur.execute("SELECT value FROM ItemTable WHERE key=?", ("debug.selectedroot",))
-                row = cur.fetchone()
-                if row:
-                    selected_root = row[0]
-                    logger.debug(f"Got debug.selectedroot as raw string: {selected_root}")
-            
             if selected_root and isinstance(selected_root, str) and selected_root.startswith("file:///"):
-                try:
-                    path = pathlib.Path(urllib.parse.unquote(selected_root[len("file:///"):])).as_posix()
-                    if not path.startswith("/"):
-                        path = "/" + path
+                path = selected_root[len("file:///"):]
+                if path:
+                    root_path = "/" + path.strip("/")
+                    logger.debug(f"Project root from debug.selectedroot: {root_path}")
                     
-                    logger.debug(f"Parsed path from debug.selectedroot: {path}")
+                    # Extract the project name using the helper function
+                    project_name = extract_project_name_from_path(root_path, debug=True)
                     
-                    # If the path is a file, get its directory; if it's already a directory, use it
-                    path_obj = pathlib.Path(path)
-                    if path_obj.is_file() or path.endswith(('.json', '.js', '.ts', '.py', '.md', '.txt')):
-                        # It's a file, get the parent directory
-                        root_path = str(path_obj.parent)
-                        logger.debug(f"Detected file, using parent directory: {root_path}")
-                    else:
-                        # It's likely a directory
-                        root_path = path
-                        logger.debug(f"Using path as directory: {root_path}")
-                    
-                    # Further check: if we got .vscode or similar config directory, go up one more level
-                    if root_path.endswith(('/.vscode', '/.git', '/.idea', '/node_modules')):
-                        root_path = str(pathlib.Path(root_path).parent)
-                        logger.debug(f"Detected config directory, using parent: {root_path}")
-                    
-                    if root_path and root_path != "/":
-                        logger.info(f"Project root from debug.selectedroot: {root_path}")
-                        
-                        # Extract the project name using the helper function
-                        project_name = extract_project_name_from_path(root_path, debug=True)
-                        
-                        if project_name:
-                            proj = {"name": project_name, "rootPath": root_path}
-                            logger.info(f"Successfully extracted project from debug.selectedroot: {proj}")
-                    else:
-                        logger.warning(f"Invalid root path from debug.selectedroot: {root_path}")
-                except Exception as e:
-                    logger.debug(f"Could not parse selected_root URI {selected_root}: {e}")
+                    if project_name:
+                        proj = {"name": project_name, "rootPath": root_path}
 
         # composers meta
         comp_meta={}
@@ -405,7 +379,7 @@ def workspace_info(db: pathlib.Path):
         proj = {"name": "(unknown)", "rootPath": "(unknown)"}
         comp_meta = {}
     finally:
-        if 'con' in locals() and con is not None:
+        if con is not None:
             try:
                 con.close()
             except Exception:
@@ -751,22 +725,24 @@ def format_chat_for_frontend(chat):
         db_path = chat.get('db_path', 'Unknown database path')
         
         # If project name is a username or unknown, try to extract a better name from rootPath
-        root_path_str = project.get('rootPath')
-        if root_path_str:
-            try:
-                root_path = pathlib.Path(root_path_str)
-                current_name = project.get('name', '')
-                username = os.path.basename(os.path.expanduser('~'))
+        if project.get('rootPath'):
+            current_name = project.get('name', '')
+            username = os.path.basename(os.path.expanduser('~'))
+            
+            # Check if project name is username or unknown or very generic
+            root_path = project.get('rootPath')
+            if (current_name == username or 
+                current_name == '(unknown)' or 
+                current_name == 'Root' or
+                # Check if rootPath is directly under /Users/username with no additional path components
+                (root_path is not None and 
+                 root_path.startswith(f'/Users/{username}') and 
+                 root_path.count('/') <= 3)):
                 
-                # Check if project name is username or unknown or very generic
-                if (current_name == username or 
-                    current_name == '(unknown)' or 
-                    current_name == 'Root' or
-                    # Check if rootPath is the user's home directory
-                    (root_path.is_dir() and root_path.samefile(pathlib.Path.home()))):
-                    
-                    # Try to extract a better name from the path
-                    project_name = extract_project_name_from_path(str(root_path), debug=False)
+                # Try to extract a better name from the path
+                root_path = project.get('rootPath')
+                if root_path is not None:
+                    project_name = extract_project_name_from_path(root_path, debug=False)
                     
                     # Only use the new name if it's meaningful
                     if (project_name and 
@@ -776,33 +752,24 @@ def format_chat_for_frontend(chat):
                         
                         logger.debug(f"Improved project name from '{current_name}' to '{project_name}'")
                         project['name'] = project_name
-                    elif 'codebase' in root_path.parts:
-                        # Special case for paths containing 'codebase'
-                        try:
-                            codebase_index = root_path.parts.index('codebase')
-                            if codebase_index + 1 < len(root_path.parts):
-                                project['name'] = root_path.parts[codebase_index + 1]
-                                logger.debug(f"Set project name to specific codebase subdirectory: {project['name']}")
-                            else:
-                                project['name'] = "cursor-view"  # Current project as default
-                        except ValueError:
-                            pass
-            except (TypeError, OSError, ValueError):
-                pass
-
+                    elif root_path.startswith(f'/Users/{username}/Documents/codebase/'):
+                        # Special case for /Users/saharmor/Documents/codebase/X
+                        parts = root_path.split('/')
+                        if len(parts) > 5:  # /Users/username/Documents/codebase/X
+                            project['name'] = parts[5]
+                            logger.debug(f"Set project name to specific codebase subdirectory: {parts[5]}")
+                        else:
+                            project['name'] = "cursor-view"  # Current project as default
+        
         # If the project doesn't have a rootPath or it's very generic, enhance it with workspace_id
-        root_path_value = project.get('rootPath')
-        if not root_path_value or root_path_value in ['/', str(pathlib.Path.home().parent)]:
+        if not project.get('rootPath') or project.get('rootPath') == '/' or project.get('rootPath') == '/Users':
             if workspace_id != 'unknown':
                 # Use workspace_id to create a more specific path
-                if not root_path_value:
-                    project['rootPath'] = str(pathlib.Path("/workspace") / workspace_id)
-                else:
-                    try:
-                        project['rootPath'] = str(pathlib.Path(root_path_value) / "workspace" / workspace_id)
-                    except (TypeError, ValueError):
-                        project['rootPath'] = str(pathlib.Path("/workspace") / workspace_id)
-
+                if not project.get('rootPath'):
+                    project['rootPath'] = f"/workspace/{workspace_id}"
+                elif project.get('rootPath') == '/' or project.get('rootPath') == '/Users':
+                    project['rootPath'] = f"{project['rootPath']}/workspace/{workspace_id}"
+        
         # FALLBACK: If project name is still generic, try to extract it from git repositories
         if project.get('name') in ['Home Directory', '(unknown)']:
             git_project_name = extract_project_from_git_repos(workspace_id, debug=True)
@@ -884,6 +851,416 @@ def get_chat(session_id):
         logger.error(f"Error in get_chat: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/cursor/status', methods=['GET'])
+def get_cursor_status():
+    """获取Cursor应用的状态信息"""
+    try:
+        # 导入cursor窗口检测器
+        import sys
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        
+        from cursor_window_detector import CursorWindowDetector
+        
+        detector = CursorWindowDetector()
+        
+        # 检查窗口状态（是否为前台应用）
+        window_status = detector.is_cursor_frontmost()
+        
+        # 检查对话框状态 - 使用workbench.auxiliaryBar.hidden检查
+        dialog_status = {
+            "is_dialog_open": False,
+            "status": "unknown",
+            "method": "workbench.auxiliaryBar.hidden",
+            "error": "需要workspace_id参数来检查AI侧边栏状态"
+        }
+        
+        # 如果提供了workspace_id参数，则检查侧边栏状态
+        workspace_id = request.args.get('workspace_id')
+        if workspace_id:
+            try:
+                # 获取Cursor根目录
+                base = cursor_root()
+                workspace_storage = base / "User" / "workspaceStorage"
+                
+                # 构建workspace数据库路径
+                workspace_db = workspace_storage / workspace_id / "state.vscdb"
+                
+                if workspace_db.exists():
+                    # 连接数据库并查询侧边栏状态
+                    con = None
+                    try:
+                        con = sqlite3.connect(f"file:{workspace_db}?mode=ro", uri=True)
+                        cur = con.cursor()
+                        
+                        # 查询workbench.auxiliaryBar.hidden的值
+                        auxiliary_bar_hidden = j(cur, "ItemTable", "workbench.auxiliaryBar.hidden")
+                        
+                        # 如果值为None，默认认为侧边栏是隐藏的
+                        is_hidden = auxiliary_bar_hidden if auxiliary_bar_hidden is not None else True
+                        
+                        dialog_status = {
+                            "is_dialog_open": not is_hidden,
+                            "status": "success",
+                            "method": "workbench.auxiliaryBar.hidden",
+                            "auxiliary_bar_hidden": is_hidden
+                        }
+                        
+                    except Exception as db_error:
+                        dialog_status = {
+                            "is_dialog_open": False,
+                            "status": "error",
+                            "method": "workbench.auxiliaryBar.hidden",
+                            "error": f"数据库查询失败: {str(db_error)}"
+                        }
+                    finally:
+                        if con:
+                            con.close()
+                else:
+                    dialog_status = {
+                        "is_dialog_open": False,
+                        "status": "error",
+                        "method": "workbench.auxiliaryBar.hidden",
+                        "error": f"Workspace数据库不存在: {workspace_id}"
+                    }
+            except Exception as workspace_error:
+                dialog_status = {
+                    "is_dialog_open": False,
+                    "status": "error",
+                    "method": "workbench.auxiliaryBar.hidden",
+                    "error": f"Workspace检查失败: {str(workspace_error)}"
+                }
+        
+        return jsonify({
+            "window": window_status,
+            "dialog": dialog_status
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in get_cursor_status: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/cursor/focus', methods=['GET', 'POST'])
+def get_cursor_focus():
+    """获取Cursor应用的焦点状态"""
+    try:
+        # 导入cursor焦点检测器
+        import sys
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        
+        from cursor_focus_detector_improved import ImprovedCursorFocusDetector
+        
+        detector = ImprovedCursorFocusDetector()
+        
+        # 检查AI对话框焦点状态
+        focus_result = detector.check_cursor_ai_focus()
+        
+        return jsonify({
+            "is_focused": focus_result.get('is_ai_dialog_focused', False),
+            "cursor_detected": focus_result.get('element_info', {}).get('app_name', '').lower() == 'cursor',
+            "ai_input_detected": focus_result.get('is_ai_dialog_focused', False),
+            "element_info": focus_result.get('element_info', {}),
+            "method": focus_result.get('method', 'unknown'),
+            "status": "success" if focus_result.get('success', False) else "error",
+            "error": focus_result.get('error')
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in get_cursor_focus: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/cursor/open', methods=['POST'])
+def open_cursor():
+    """打开Cursor应用"""
+    try:
+        # 导入cursor自动化模块
+        import sys
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        
+        from pyautogu import CursorAutomation
+        
+        automation = CursorAutomation()
+        
+        # 尝试打开Cursor
+        success = automation.open_cursor()
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "Cursor应用已成功打开"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "打开Cursor应用失败"
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"Error in open_cursor: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "message": "打开Cursor应用时发生错误"
+        }), 500
+
+@app.route('/api/cursor/activate', methods=['POST'])
+def activate_cursor():
+    """激活Cursor应用窗口"""
+    try:
+        # 导入cursor自动化模块
+        import sys
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        
+        from pyautogu import CursorAutomation
+        
+        automation = CursorAutomation()
+        
+        # 尝试激活Cursor
+        success = automation.activate_cursor()
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "Cursor应用已成功激活"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "激活Cursor应用失败"
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"Error in activate_cursor: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "message": "激活Cursor应用时发生错误"
+        }), 500
+
+@app.route('/api/cursor/quit', methods=['POST'])
+def quit_cursor():
+    """退出Cursor应用"""
+    try:
+        import subprocess
+        import platform
+        
+        system = platform.system()
+        
+        if system == 'Darwin':
+            # macOS: 使用AppleScript退出Cursor
+            script = '''
+            tell application id "com.todesktop.230313mzl4w4u92"
+                quit
+            end tell
+            '''
+            result = subprocess.run(['osascript', '-e', script], 
+                                   capture_output=True, text=True)
+            if result.returncode == 0:
+                return jsonify({
+                    "success": True,
+                    "message": "Cursor应用已成功退出"
+                })
+            else:
+                # 如果Bundle ID失败，尝试使用进程名
+                script_fallback = '''
+                tell application "Cursor"
+                    quit
+                end tell
+                '''
+                result = subprocess.run(['osascript', '-e', script_fallback], 
+                                       capture_output=True, text=True)
+                if result.returncode == 0:
+                    return jsonify({
+                        "success": True,
+                        "message": "Cursor应用已成功退出"
+                    })
+                else:
+                    return jsonify({
+                        "success": False,
+                        "message": "退出Cursor应用失败"
+                    }), 500
+        else:
+            # Windows/Linux: 使用taskkill或pkill
+            if system == 'Windows':
+                subprocess.run(['taskkill', '/f', '/im', 'Cursor.exe'], check=True)
+            else:
+                subprocess.run(['pkill', '-f', 'cursor'], check=True)
+            
+            return jsonify({
+                "success": True,
+                "message": "Cursor应用已成功退出"
+            })
+        
+    except Exception as e:
+        logger.error(f"Error in quit_cursor: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "message": "退出Cursor应用时发生错误"
+        }), 500
+
+@app.route('/api/cursor/dialog/open', methods=['POST'])
+def open_cursor_dialog():
+    """打开Cursor AI对话框"""
+    try:
+        # 导入cursor自动化模块
+        import sys
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        
+        from pyautogu import CursorAutomation
+        
+        automation = CursorAutomation()
+        
+        # 尝试打开对话框
+        success = automation.open_chat_dialog()
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "AI对话框已成功打开"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "打开AI对话框失败"
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"Error in open_cursor_dialog: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "message": "打开AI对话框时发生错误"
+        }), 500
+
+@app.route('/api/cursor/dialog/close', methods=['POST'])
+def close_cursor_dialog():
+    """关闭Cursor AI对话框"""
+    try:
+        import pyautogui
+        
+        # 发送Escape键关闭对话框
+        pyautogui.press('escape')
+        
+        return jsonify({
+            "success": True,
+            "message": "AI对话框已成功关闭"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in close_cursor_dialog: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "message": "关闭AI对话框时发生错误"
+        }), 500
+
+@app.route('/api/cursor/sidebar/status', methods=['GET'])
+def get_sidebar_status():
+    """检测AI侧边栏状态"""
+    try:
+        logger.info(f"Received sidebar status request from {request.remote_addr}")
+        
+        # 获取workspace_id参数
+        workspace_id = request.args.get('workspace_id')
+        if not workspace_id:
+            return jsonify({"error": "Missing workspace_id parameter"}), 400
+        
+        # 获取Cursor根目录
+        base = cursor_root()
+        workspace_storage = base / "User" / "workspaceStorage"
+        
+        # 构建workspace数据库路径
+        workspace_db = workspace_storage / workspace_id / "state.vscdb"
+        
+        if not workspace_db.exists():
+            return jsonify({"error": f"Workspace database not found: {workspace_id}"}), 404
+        
+        # 连接数据库并查询侧边栏状态
+        con = None
+        try:
+            con = sqlite3.connect(f"file:{workspace_db}?mode=ro", uri=True)
+            cur = con.cursor()
+            
+            # 查询workbench.auxiliaryBar.hidden的值
+            auxiliary_bar_hidden = j(cur, "ItemTable", "workbench.auxiliaryBar.hidden")
+            
+            # 如果值为None，默认认为侧边栏是隐藏的
+            is_hidden = auxiliary_bar_hidden if auxiliary_bar_hidden is not None else True
+            
+            logger.info(f"Sidebar status for workspace {workspace_id}: hidden={is_hidden}")
+            
+            return jsonify({
+                "success": True,
+                "workspace_id": workspace_id,
+                "auxiliary_bar_hidden": is_hidden,
+                "needs_open_command": is_hidden  # 如果隐藏则需要打开命令
+            })
+            
+        finally:
+            if con:
+                con.close()
+                
+    except Exception as e:
+        logger.error(f"Error checking sidebar status: {e}")
+        return jsonify({"error": f"Failed to check sidebar status: {str(e)}"}), 500
+
+
+@app.route('/api/cursor/sidebar/open', methods=['POST'])
+def open_sidebar():
+    """打开AI侧边栏"""
+    try:
+        logger.info(f"Received open sidebar request from {request.remote_addr}")
+        
+        # 检查pyautogui模块是否可用
+        try:
+            import sys
+            import os
+            
+            # 添加当前目录到Python路径
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            if current_dir not in sys.path:
+                sys.path.insert(0, current_dir)
+            from pyautogu import open_ai_sidebar
+        except ImportError as e:
+            logger.error(f"pyautogu module not available: {e}")
+            return jsonify({"error": "Cursor automation not available. Please ensure pyautogu.py is properly configured."}), 500
+        
+        # 获取请求数据
+        data = request.get_json() or {}
+        skip_activation = data.get('skip_activation', False)
+        
+        logger.info(f"Opening AI sidebar, skip_activation: {skip_activation}")
+        
+        # 调用打开AI侧边栏功能
+        success = open_ai_sidebar(skip_activation=skip_activation)
+        
+        if success:
+            logger.info("AI sidebar opened successfully")
+            return jsonify({"success": True, "message": "AI sidebar opened successfully"})
+        else:
+            logger.error("Failed to open AI sidebar")
+            return jsonify({"error": "Failed to open AI sidebar. Please ensure Cursor is running and accessible."}), 500
+            
+    except Exception as e:
+        logger.error(f"Error opening sidebar: {e}")
+        return jsonify({"error": f"Failed to open sidebar: {str(e)}"}), 500
+
+
 @app.route('/api/send-to-cursor', methods=['POST'])
 def send_to_cursor():
     """发送消息到Cursor应用"""
@@ -913,6 +1290,7 @@ def send_to_cursor():
         try:
             import sys
             import os
+            
             # 添加当前目录到Python路径
             current_dir = os.path.dirname(os.path.abspath(__file__))
             if current_dir not in sys.path:
@@ -1133,403 +1511,14 @@ def generate_standalone_html(chat):
         return f"<html><body><h1>Error generating chat export</h1><p>Error: {e}</p></body></html>"
 
 # Serve React app
-# ===== Cursor调试相关API接口 =====
-
-def check_cursor_window_status():
-    """检测Cursor窗口是否在最前台
-    
-    Returns:
-        dict: 包含窗口状态信息
-    """
-    try:
-        if platform.system() == 'Darwin':
-            # macOS: 使用新的Accessibility API检测器
-            from cursor_window_detector import CursorWindowDetector
-            detector = CursorWindowDetector()
-            return detector.is_cursor_frontmost()
-        else:
-            # Windows/Linux: 使用pygetwindow
-            try:
-                import pygetwindow as gw
-                active_window = gw.getActiveWindow()
-                if active_window:
-                    is_cursor_front = 'Cursor' in str(active_window.title)
-                    return {
-                        'is_front': is_cursor_front,
-                        'active_window': active_window.title,
-                        'status': 'success'
-                    }
-                else:
-                    return {'is_front': False, 'status': 'no_active_window'}
-            except ImportError:
-                return {'is_front': False, 'error': 'pygetwindow not installed', 'status': 'error'}
-            except Exception as e:
-                return {'is_front': False, 'error': str(e), 'status': 'error'}
-    except Exception as e:
-        return {'is_front': False, 'error': str(e), 'status': 'error'}
-
-
-def check_cursor_dialog_status():
-    """检测Cursor AI对话框是否打开
-    
-    Returns:
-        dict: 包含对话框状态信息
-    """
-    try:
-        if platform.system() == 'Darwin':
-            # macOS: 使用新的Accessibility API检测器
-            from cursor_window_detector import CursorWindowDetector
-            detector = CursorWindowDetector()
-            return detector.detect_dialog_state_via_accessibility()
-        else:
-            # Windows/Linux: 使用原有的图像识别方法
-            from pyautogu import CursorAutomation
-            automation = CursorAutomation()
-            dialog_state = automation.detect_dialog_state()
-            
-            return {
-                'dialog_state': dialog_state,
-                'is_dialog_open': dialog_state == 'dialogue',
-                'is_empty': dialog_state == 'empty',
-                'status': 'success'
-            }
-    except Exception as e:
-        return {
-            'dialog_state': 'unknown',
-            'is_dialog_open': False,
-            'is_empty': False,
-            'error': str(e),
-            'status': 'error'
-        }
-
-
-@app.route('/api/cursor/status', methods=['GET'])
-def get_cursor_status():
-    """获取Cursor当前状态
-    
-    Returns:
-        JSON: 包含窗口状态和对话框状态
-    """
-    try:
-        window_status = check_cursor_window_status()
-        dialog_status = check_cursor_dialog_status()
-        
-        return jsonify({
-            'window': window_status,
-            'dialog': dialog_status,
-            'timestamp': datetime.datetime.now().isoformat()
-        })
-    except Exception as e:
-        logger.error(f"获取Cursor状态失败: {e}")
-        return jsonify({
-            'error': str(e),
-            'status': 'error'
-        }), 500
-
-
-@app.route('/api/cursor/open', methods=['POST'])
-def open_cursor():
-    """打开Cursor应用
-    
-    Returns:
-        JSON: 操作结果
-    """
-    try:
-        from pyautogu import CursorAutomation
-        automation = CursorAutomation()
-        success = automation.open_cursor()
-        
-        return jsonify({
-            'success': success,
-            'message': '成功打开Cursor' if success else '打开Cursor失败',
-            'timestamp': datetime.datetime.now().isoformat()
-        })
-    except Exception as e:
-        logger.error(f"打开Cursor失败: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': '打开Cursor时发生异常'
-        }), 500
-
-
-@app.route('/api/cursor/activate', methods=['POST'])
-def activate_cursor():
-    """激活Cursor窗口到前台
-    
-    Returns:
-        JSON: 操作结果
-    """
-    try:
-        from pyautogu import CursorAutomation
-        automation = CursorAutomation()
-        success = automation.activate_cursor()
-        
-        return jsonify({
-            'success': success,
-            'message': '成功激活Cursor窗口' if success else '激活Cursor窗口失败',
-            'timestamp': datetime.datetime.now().isoformat()
-        })
-    except Exception as e:
-        logger.error(f"激活Cursor窗口失败: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': '激活Cursor窗口时发生异常'
-        }), 500
-
-
-@app.route('/api/cursor/dialog/open', methods=['POST'])
-def open_cursor_dialog():
-    """打开Cursor AI对话框
-    
-    Returns:
-        JSON: 操作结果
-    """
-    try:
-        from pyautogu import CursorAutomation
-        automation = CursorAutomation()
-        success = automation.open_chat_dialog()
-        
-        return jsonify({
-            'success': success,
-            'message': '成功打开AI对话框' if success else '打开AI对话框失败',
-            'timestamp': datetime.datetime.now().isoformat()
-        })
-    except Exception as e:
-        logger.error(f"打开AI对话框失败: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': '打开AI对话框时发生异常'
-        }), 500
-
-
-@app.route('/api/cursor/dialog/close', methods=['POST'])
-def close_cursor_dialog():
-    """关闭Cursor AI对话框
-    
-    Returns:
-        JSON: 操作结果
-    """
-    try:
-        # 使用ESC键关闭对话框
-        import pyautogui
-        pyautogui.press('escape')
-        
-        # 等待一下再检测状态
-        import time
-        time.sleep(0.5)
-        
-        # 检测关闭结果
-        dialog_status = check_cursor_dialog_status()
-        success = not dialog_status.get('is_dialog_open', True)
-        
-        return jsonify({
-            'success': success,
-            'message': '成功关闭AI对话框' if success else '关闭AI对话框失败',
-            'dialog_status': dialog_status,
-            'timestamp': datetime.datetime.now().isoformat()
-        })
-    except Exception as e:
-        logger.error(f"关闭AI对话框失败: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': '关闭AI对话框时发生异常'
-        }), 500
-
-
-@app.route('/api/cursor/focus', methods=['GET'])
-def check_cursor_focus():
-    """检测用户是否正在Cursor AI对话框中输入
-    
-    Returns:
-        JSON: 聚焦状态信息
-    """
-    try:
-        from cursor_focus_detector import CursorFocusDetector
-        detector = CursorFocusDetector()
-        result = detector.check_cursor_ai_focus()
-        
-        return jsonify({
-            'is_focused': result['is_focused'],
-            'cursor_detected': result['cursor_detected'],
-            'ai_input_detected': result['ai_input_detected'],
-            'element_info': result['element_info'],
-            'timestamp': datetime.datetime.now().isoformat(),
-            'status': 'success'
-        })
-    except Exception as e:
-        logger.error(f"检测Cursor聚焦状态失败: {e}")
-        return jsonify({
-            'is_focused': False,
-            'cursor_detected': False,
-            'ai_input_detected': False,
-            'element_info': {},
-            'error': str(e),
-            'status': 'error'
-        }), 500
-
-
-@app.route('/api/cursor/quit', methods=['POST'])
-def quit_cursor():
-    """退出Cursor应用
-    
-    Returns:
-        JSON: 操作结果
-    """
-    try:
-        if platform.system() == 'Darwin':
-            # macOS: 使用AppleScript退出Cursor
-            script = '''
-            tell application id "com.todesktop.230313mzl4w4u92"
-                quit
-            end tell
-            '''
-            result = subprocess.run(['osascript', '-e', script], 
-                                   capture_output=True, text=True)
-            success = result.returncode == 0
-            
-            if not success:
-                # 备用方案：使用进程名
-                script_fallback = '''
-                tell application "Cursor"
-                    quit
-                end tell
-                '''
-                result = subprocess.run(['osascript', '-e', script_fallback], 
-                                       capture_output=True, text=True)
-                success = result.returncode == 0
-        else:
-            # Windows/Linux: 使用taskkill或pkill
-            if platform.system() == 'Windows':
-                result = subprocess.run(['taskkill', '/f', '/im', 'Cursor.exe'], 
-                                       capture_output=True, text=True)
-            else:
-                result = subprocess.run(['pkill', '-f', 'Cursor'], 
-                                       capture_output=True, text=True)
-            success = result.returncode == 0
-        
-        return jsonify({
-            'success': success,
-            'message': '成功退出Cursor' if success else '退出Cursor失败',
-            'timestamp': datetime.datetime.now().isoformat()
-        })
-    except Exception as e:
-        logger.error(f"退出Cursor失败: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': '退出Cursor时发生异常'
-        }), 500
-
-
-@app.route('/api/cursor/screenshot', methods=['POST'])
-def take_screenshot():
-    """截图功能
-    
-    支持两种截图模式：
-    - window: 截取最前窗口 (Command+Shift+4+Space)
-    - fullscreen: 全屏截图 (Command+Shift+3)
-    
-    Returns:
-        JSON: 操作结果和截图文件路径
-    """
-    try:
-        data = request.get_json() or {}
-        screenshot_type = data.get('type', 'window')  # 默认窗口截图
-        
-        if platform.system() == 'Darwin':
-            # macOS: 使用screencapture命令
-            import tempfile
-            import base64
-            
-            # 创建临时文件
-            temp_dir = tempfile.gettempdir()
-            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
-            filename = f'cursor_screenshot_{timestamp}.png'
-            filepath = os.path.join(temp_dir, filename)
-            
-            if screenshot_type == 'window':
-                # 窗口截图：使用-w参数截取最前窗口
-                script = f'''
-                do shell script "screencapture -w '{filepath}'"
-                '''
-            else:
-                # 全屏截图
-                script = f'''
-                do shell script "screencapture '{filepath}'"
-                '''
-            
-            result = subprocess.run(['osascript', '-e', script], 
-                                   capture_output=True, text=True)
-            
-            if result.returncode == 0 and os.path.exists(filepath):
-                # 读取截图文件并转换为base64
-                with open(filepath, 'rb') as f:
-                    image_data = f.read()
-                    image_base64 = base64.b64encode(image_data).decode('utf-8')
-                
-                # 删除临时文件
-                try:
-                    os.remove(filepath)
-                except:
-                    pass
-                
-                return jsonify({
-                    'success': True,
-                    'message': f'截图成功 ({screenshot_type})',
-                    'image_data': f'data:image/png;base64,{image_base64}',
-                    'filename': filename,
-                    'timestamp': datetime.datetime.now().isoformat()
-                })
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': result.stderr or '截图命令执行失败',
-                    'message': '截图失败'
-                }), 500
-        else:
-            # Windows/Linux: 使用其他截图工具
-            return jsonify({
-                'success': False,
-                'error': '当前系统不支持截图功能',
-                'message': '仅支持macOS系统'
-            }), 501
-            
-    except Exception as e:
-        logger.error(f"截图失败: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': '截图时发生异常'
-        }), 500
-
-
-# ===== 通用路由（必须放在最后） =====
-
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve_react(path):
-    """服务React应用的通用路由
-    
-    Args:
-        path: 请求路径
-        
-    Returns:
-        静态文件或index.html
-    """
-    # 如果是API路径，返回404让Flask处理其他路由
-    if path.startswith('api/'):
-        return "API endpoint not found", 404
-        
     if path and app.static_folder and Path(app.static_folder, path).exists():
         return send_from_directory(app.static_folder, path)
     if app.static_folder:
         return send_from_directory(app.static_folder, 'index.html')
     return "Static folder not configured", 404
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run the Cursor Chat View server')

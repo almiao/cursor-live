@@ -24,6 +24,7 @@ const CursorDebug = () => {
   });
   const [lastError, setLastError] = useState(null);
   const [lastScreenshot, setLastScreenshot] = useState(null);
+  const [currentWorkspaceId, setCurrentWorkspaceId] = useState(null);
 
   // API基础URL - 使用代理，所以使用空字符串
   const API_BASE = process.env.REACT_APP_API_BASE || '';
@@ -54,13 +55,45 @@ const CursorDebug = () => {
   }, [API_BASE]);
 
   /**
+   * 获取最新的workspace_id
+   */
+  const fetchLatestWorkspaceId = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/chats`);
+      if (response.ok) {
+        const chats = await response.json();
+        if (chats && chats.length > 0) {
+          // 获取最新聊天的workspace_id
+          const latestWorkspaceId = chats[0].workspace_id;
+          setCurrentWorkspaceId(latestWorkspaceId);
+          return latestWorkspaceId;
+        }
+      }
+    } catch (error) {
+      console.error('获取workspace_id失败:', error);
+    }
+    return null;
+  }, [API_BASE]);
+
+  /**
    * 获取Cursor状态
    */
   const fetchStatus = useCallback(async () => {
     try {
+      // 确保有workspace_id
+      let workspaceId = currentWorkspaceId;
+      if (!workspaceId) {
+        workspaceId = await fetchLatestWorkspaceId();
+      }
+      
+      // 构建状态API URL，如果有workspace_id则传递
+      const statusUrl = workspaceId 
+        ? `${API_BASE}/api/cursor/status?workspace_id=${workspaceId}`
+        : `${API_BASE}/api/cursor/status`;
+      
       // 并行获取窗口/对话框状态和聚焦状态
       const [statusResponse, focusData] = await Promise.all([
-        fetch(`${API_BASE}/api/cursor/status`),
+        fetch(statusUrl),
         fetchFocusStatus()
       ]);
       
@@ -84,7 +117,7 @@ const CursorDebug = () => {
         focus: { ...prev.focus, status: 'error' }
       }));
     }
-  }, [API_BASE, fetchFocusStatus]);
+  }, [API_BASE, currentWorkspaceId, fetchLatestWorkspaceId, fetchFocusStatus]);
 
   /**
    * 执行操作的通用函数
@@ -193,6 +226,11 @@ const CursorDebug = () => {
   const manualRefresh = () => {
     fetchStatus();
   };
+
+  // 初始化时获取workspace_id
+  useEffect(() => {
+    fetchLatestWorkspaceId();
+  }, [fetchLatestWorkspaceId]);
 
   // 设置定时刷新（1000ms）
   useEffect(() => {

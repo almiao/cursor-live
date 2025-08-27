@@ -13,34 +13,48 @@ from typing import Optional, List, Dict, Any, Union
 NSWorkspaceType = Any
 AXUIElementType = Any
 
+# macOS框架导入和常量定义
+MAC_OS_AVAILABLE = False
+NSWorkspace = None
+AXUIElementCreateApplication = None
+kAXWindowsAttribute = "AXWindows"
+kAXTitleAttribute = "AXTitle"
+kAXRoleAttribute = "AXRole"
+kAXSubroleAttribute = "AXSubrole"
+kAXChildrenAttribute = "AXChildren"
+kAXValueAttribute = "AXValue"
+AXUIElementCopyAttributeValue = None
+kAXErrorSuccess = 0
+AXIsProcessTrusted = None
+
 try:
-    from AppKit import NSWorkspace  # type: ignore
-    from ApplicationServices import (  # type: ignore
-        AXUIElementCreateApplication, 
-        kAXWindowsAttribute, 
-        kAXTitleAttribute, 
-        kAXRoleAttribute,
-        kAXSubroleAttribute,
-        kAXChildrenAttribute,
-        kAXValueAttribute,
-        AXUIElementCopyAttributeValue,
-        kAXErrorSuccess
-    )
-    MACOS_AVAILABLE = True
+    import AppKit
+    NSWorkspace = AppKit.NSWorkspace  # type: ignore
+    
+    import ApplicationServices
+    AXUIElementCreateApplication = getattr(ApplicationServices, 'AXUIElementCreateApplication', None)
+    kAXWindowsAttribute = getattr(ApplicationServices, 'kAXWindowsAttribute', "AXWindows")
+    kAXTitleAttribute = getattr(ApplicationServices, 'kAXTitleAttribute', "AXTitle")
+    kAXRoleAttribute = getattr(ApplicationServices, 'kAXRoleAttribute', "AXRole")
+    kAXSubroleAttribute = getattr(ApplicationServices, 'kAXSubroleAttribute', "AXSubrole")
+    kAXChildrenAttribute = getattr(ApplicationServices, 'kAXChildrenAttribute', "AXChildren")
+    kAXValueAttribute = getattr(ApplicationServices, 'kAXValueAttribute', "AXValue")
+    AXUIElementCopyAttributeValue = getattr(ApplicationServices, 'AXUIElementCopyAttributeValue', None)
+    kAXErrorSuccess = getattr(ApplicationServices, 'kAXErrorSuccess', 0)
+    AXIsProcessTrusted = getattr(ApplicationServices, 'AXIsProcessTrusted', None)
+    
+    MAC_OS_AVAILABLE = True
 except ImportError as e:
     logging.warning(f"macOS框架不可用: {e}")
-    MACOS_AVAILABLE = False
-    # 占位符定义
+    MAC_OS_AVAILABLE = False
+    # 使用占位符函数
     NSWorkspace = type('NSWorkspace', (), {'sharedWorkspace': lambda: None})  # type: ignore
     AXUIElementCreateApplication = lambda x: None  # type: ignore
-    kAXWindowsAttribute = "AXWindows"  # type: ignore
-    kAXTitleAttribute = "AXTitle"  # type: ignore
-    kAXRoleAttribute = "AXRole"  # type: ignore
-    kAXSubroleAttribute = "AXSubrole"  # type: ignore
-    kAXChildrenAttribute = "AXChildren"  # type: ignore
-    kAXValueAttribute = "AXValue"  # type: ignore
     AXUIElementCopyAttributeValue = lambda x, y, z: (1, None)  # type: ignore
-    kAXErrorSuccess = 0  # type: ignore
+    AXIsProcessTrusted = lambda: False  # type: ignore
+
+# 向后兼容
+MACOS_AVAILABLE = MAC_OS_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +67,32 @@ class CursorWindowDetector:
     def __init__(self):
         self.cursor_pid: Optional[int] = None
         self.app_ref: Optional[AXUIElementType] = None
+        self._check_accessibility_permissions()
+        
+    def _check_accessibility_permissions(self) -> bool:
+        """
+        检查Accessibility权限
+        
+        Returns:
+            bool: 是否有权限
+        """
+        if not MACOS_AVAILABLE:
+            return False
+            
+        try:
+            from ApplicationServices import AXIsProcessTrusted  # type: ignore
+            is_trusted = AXIsProcessTrusted()
+            if not is_trusted:
+                logger.warning("Accessibility权限未授予")
+                logger.warning("请在系统偏好设置 > 安全性与隐私 > 隐私 > 辅助功能中添加此应用的权限")
+                return False
+            return True
+        except ImportError:
+            logger.warning("无法检查Accessibility权限")
+            return False
+        except Exception as e:
+            logger.error(f"检查Accessibility权限时发生错误: {e}")
+            return False
         
     def find_cursor_process(self) -> Optional[int]:
         """
@@ -148,7 +188,11 @@ class CursorWindowDetector:
             )
             
             if error_code != kAXErrorSuccess:  # type: ignore
-                logger.error(f"获取窗口列表失败，错误代码: {error_code}")
+                if error_code == -25204:
+                    logger.error(f"获取窗口列表失败，错误代码: {error_code} - Accessibility权限被拒绝")
+                    logger.error("请在系统偏好设置 > 安全性与隐私 > 隐私 > 辅助功能中添加此应用的权限")
+                else:
+                    logger.error(f"获取窗口列表失败，错误代码: {error_code}")
                 return []
             
             if not windows:
@@ -200,83 +244,21 @@ class CursorWindowDetector:
     
     def detect_dialog_state_via_accessibility(self) -> Dict[str, Any]:
         """
-        通过Accessibility API检测对话框状态
+        AI对话框状态检测 - 现在使用workbench.auxiliaryBar.hidden检查
         
         Returns:
             Dict[str, Any]: 检测结果
         """
-        try:
-            logger.info("开始通过Accessibility API检测对话框状态...")
-            
-            windows = self.get_cursor_windows()
-            if not windows:
-                return {
-                    'dialog_state': 'unknown',
-                    'is_dialog_open': False,
-                    'is_empty': False,
-                    'status': 'error',
-                    'error': 'No Cursor windows found'
-                }
-            
-            # 分析窗口内容来判断对话框状态
-            dialog_indicators = []
-            
-            for window_info in windows:
-                window = window_info['element']
-                title = window_info['title']
-                
-                logger.info(f"分析窗口: {title}")
-                
-                try:
-                    # 获取窗口的子元素
-                    children_error, children = AXUIElementCopyAttributeValue(  # type: ignore
-                        window, 
-                        kAXChildrenAttribute,  # type: ignore
-                        None
-                    )
-                    
-                    if children_error == kAXErrorSuccess and children:  # type: ignore
-                        logger.info(f"窗口 '{title}' 有 {len(children)} 个子元素")
-                        
-                        # 递归检查子元素，寻找对话框相关的UI元素
-                        dialog_elements = self._search_dialog_elements(children, depth=0, max_depth=3)
-                        
-                        if dialog_elements:
-                            dialog_indicators.extend(dialog_elements)
-                            logger.info(f"在窗口 '{title}' 中找到 {len(dialog_elements)} 个对话框相关元素")
-                    
-                except Exception as e:
-                    logger.warning(f"分析窗口 '{title}' 时发生异常: {e}")
-                    continue
-            
-            # 根据找到的元素判断对话框状态
-            if dialog_indicators:
-                logger.info(f"检测到 {len(dialog_indicators)} 个对话框指示器")
-                return {
-                    'dialog_state': 'dialogue',
-                    'is_dialog_open': True,
-                    'is_empty': False,
-                    'status': 'success',
-                    'indicators': dialog_indicators
-                }
-            else:
-                logger.info("未检测到对话框指示器，可能是空白界面")
-                return {
-                    'dialog_state': 'empty',
-                    'is_dialog_open': False,
-                    'is_empty': True,
-                    'status': 'success'
-                }
-                
-        except Exception as e:
-            logger.error(f"通过Accessibility API检测对话框状态时发生异常: {e}")
-            return {
-                'dialog_state': 'unknown',
-                'is_dialog_open': False,
-                'is_empty': False,
-                'status': 'error',
-                'error': str(e)
-            }
+        logger.info("AI对话框检测已更新为使用workbench.auxiliaryBar.hidden")
+        
+        return {
+            'dialog_state': 'unknown',
+            'is_dialog_open': False,
+            'is_empty': True,
+            'status': 'success',
+            'method': 'workbench.auxiliaryBar.hidden',
+            'message': '请使用/api/cursor/status?workspace_id=<workspace_id>来检查AI侧边栏状态'
+        }
     
     def _search_dialog_elements(self, elements, depth: int = 0, max_depth: int = 3) -> List[Dict[str, Any]]:
         """

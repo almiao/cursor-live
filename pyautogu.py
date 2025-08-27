@@ -170,19 +170,47 @@ class CursorAutomation:
                         logger.warning("未找到Cursor窗口，尝试打开")
                         return self.open_cursor()
             else:
-                # Windows/Linux: 使用pygetwindow激活
+                # Windows/Linux: 尝试使用pygetwindow激活
                 try:
                     import pygetwindow as gw
                     # 查找标题中含有"Cursor"的窗口
-                    cursor_windows = gw.getWindowsWithTitle('Cursor')
+                    cursor_windows = []
+                    
+                    # 使用动态属性检查来避免linter错误
+                    get_windows_func = getattr(gw, 'getWindowsWithTitle', None)
+                    get_all_windows_func = getattr(gw, 'getAllWindows', None)
+                    
+                    if get_windows_func:
+                        try:
+                            cursor_windows = get_windows_func('Cursor')
+                        except Exception:
+                            cursor_windows = []
+                    elif get_all_windows_func:
+                        try:
+                            all_windows = get_all_windows_func()
+                            cursor_windows = [w for w in all_windows if 'Cursor' in str(getattr(w, 'title', ''))]
+                        except Exception:
+                            cursor_windows = []
+                    
                     if cursor_windows:
                         # 激活第一个找到的窗口
                         window = cursor_windows[0]
-                        if not window.isActive:
-                            window.activate()
-                        logger.info("已激活Cursor窗口")
-                        time.sleep(1)
-                        return True
+                        try:
+                            is_active = getattr(window, 'isActive', None)
+                            activate_func = getattr(window, 'activate', None)
+                            
+                            if is_active is not None and not is_active:
+                                if activate_func:
+                                    activate_func()
+                            elif activate_func:
+                                activate_func()
+                            
+                            logger.info("已激活Cursor窗口")
+                            time.sleep(1)
+                            return True
+                        except Exception as e:
+                            logger.warning(f"激活窗口失败: {e}")
+                            return False
                     else:
                         logger.warning("未找到Cursor窗口，尝试打开")
                         return self.open_cursor()
@@ -232,6 +260,34 @@ class CursorAutomation:
             
         except Exception as e:
             logger.error(f"打开聊天对话框失败: {e}")
+            return False
+    
+    def open_ai_sidebar(self, skip_activation: bool = False) -> bool:
+        """打开AI侧边栏（Command/Ctrl + Shift + A）
+        
+        Args:
+            skip_activation: 是否跳过激活步骤
+        """
+        try:
+            # 确保Cursor是活动窗口（如果不跳过激活）
+            if not skip_activation:
+                self.activate_cursor()
+                time.sleep(1)  # 等待窗口激活
+            else:
+                logger.info("跳过侧边栏激活步骤")
+                time.sleep(0.5)  # 短暂等待
+            
+            # 发送快捷键：Command/Ctrl + Shift + A
+            pyautogui.hotkey(self.modifier, 'shift', 'a')
+            logger.info("已发送快捷键 Command+Shift+A 打开AI侧边栏")
+            
+            # 等待侧边栏打开
+            time.sleep(2)
+            logger.info("AI侧边栏应该已经打开")
+            return True
+            
+        except Exception as e:
+            logger.error(f"打开AI侧边栏失败: {e}")
             return False
     
     def input_text(self, text: str) -> bool:
@@ -542,6 +598,15 @@ def switch_cursor_project(root_path: str):
     """切换Cursor到指定项目目录"""
     automator = CursorAutomation()
     return automator.switch_cursor_project(root_path)
+
+def open_ai_sidebar(skip_activation: bool = False):
+    """打开AI侧边栏
+    
+    Args:
+        skip_activation: 是否跳过激活步骤
+    """
+    automator = CursorAutomation()
+    return automator.open_ai_sidebar(skip_activation=skip_activation)
 
 if __name__ == "__main__":
     main()
