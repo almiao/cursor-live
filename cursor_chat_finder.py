@@ -3,9 +3,6 @@
 Find and extract all Cursor chat histories from a user's system.
 This script locates all workspace and session databases and extracts chat data.
 """
-
-import os
-import glob
 import json
 import pathlib
 import platform

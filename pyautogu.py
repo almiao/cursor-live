@@ -5,6 +5,9 @@ import subprocess
 import platform
 import logging
 import os
+import sqlite3
+import json
+import pathlib
 from typing import Optional
 
 # 设置日志
@@ -17,56 +20,101 @@ class CursorAutomation:
         self.modifier = 'command' if self.system == 'Darwin' else 'ctrl'
         self.alt_modifier = 'option' if self.system == 'Darwin' else 'alt'
         
-        # 图像文件路径
-        self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.dialogue_image = os.path.join(self.base_dir, 'cursor_dialogue.png')
-        self.empty_image = os.path.join(self.base_dir, 'cursor_empty.png')
-        
         # 设置pyautogui的置信度
         pyautogui.FAILSAFE = True
         
-    def detect_dialog_state(self) -> str:
-        """检测当前对话框状态
-        
-        Returns:
-            str: 'dialogue' - 检测到对话框, 'empty' - 检测到空白界面, 'unknown' - 未检测到已知状态
-        """
+    def cursor_root(self) -> pathlib.Path:
+        """获取Cursor根目录路径"""
+        h = pathlib.Path.home()
+        s = platform.system()
+        if s == "Darwin":   return h / "Library" / "Application Support" / "Cursor"
+        if s == "Windows":  return h / "AppData" / "Roaming" / "Cursor"
+        if s == "Linux":    return h / ".config" / "Cursor"
+        raise RuntimeError(f"Unsupported OS: {s}")
+    
+    def j(self, cur: sqlite3.Cursor, table: str, key: str):
+        """查询数据库中的JSON配置值"""
+        cur.execute(f"SELECT value FROM {table} WHERE key=?", (key,))
+        row = cur.fetchone()
+        if row:
+            try:
+                return json.loads(row[0])
+            except Exception as e:
+                logger.debug(f"Failed to parse JSON for {key}: {e}")
+        return None
+    
+    def get_workspace_id(self) -> Optional[str]:
+        """获取当前工作区的ID"""
         try:
-            logger.info("开始图像检测...")
+            # 获取Cursor根目录
+            base = self.cursor_root()
+            workspace_storage = base / "User" / "workspaceStorage"
             
-            # 检测是否有对话框
-            if os.path.exists(self.dialogue_image):
-                logger.info(f"正在检测对话框图像: {self.dialogue_image}")
-                try:
-                    dialogue_location = pyautogui.locateOnScreen(self.dialogue_image, confidence=0.8)
-                    logger.info(f"图像检测：检测到对话框已打开，位置: {dialogue_location}")
-                    return 'dialogue'
-                except ImageNotFoundException:
-                    logger.info("图像检测：未检测到对话框")
-                except Exception as e:
-                    logger.warning(f"对话框图像检测异常: {e}")
-            else:
-                logger.warning(f"对话框图像文件不存在: {self.dialogue_image}")
+            if not workspace_storage.exists():
+                logger.warning(f"Workspace存储目录不存在: {workspace_storage}")
+                return None
             
-            # 检测是否是空白界面
-            if os.path.exists(self.empty_image):
-                logger.info(f"正在检测空白界面图像: {self.empty_image}")
-                try:
-                    empty_location = pyautogui.locateOnScreen(self.empty_image, confidence=0.8)
-                    logger.info(f"图像检测：检测到空白界面，位置: {empty_location}")
-                    return 'empty'
-                except ImageNotFoundException:
-                    logger.info("图像检测：未检测到空白界面")
-                except Exception as e:
-                    logger.warning(f"空白界面图像检测异常: {e}")
-            else:
-                logger.warning(f"空白界面图像文件不存在: {self.empty_image}")
+            # 查找最新的workspace数据库
+            workspace_dirs = list(workspace_storage.glob("*"))
+            if not workspace_dirs:
+                logger.warning("未找到任何workspace目录")
+                return None
             
-            logger.info("图像检测：未检测到已知状态")
-            return 'unknown'
+            # 按修改时间排序，获取最新的
+            latest_workspace = max(workspace_dirs, key=lambda x: x.stat().st_mtime)
+            return latest_workspace.name
             
         except Exception as e:
-            logger.error(f"图像检测失败: {e}")
+            logger.error(f"获取workspace ID失败: {e}")
+            return None
+    
+    def detect_dialog_state(self) -> str:
+        try:
+            logger.info("开始基于数据库的对话框状态检测...")
+            
+            # 获取workspace ID
+            workspace_id = self.get_workspace_id()
+            if not workspace_id:
+                logger.warning("无法获取workspace ID，使用默认状态")
+                return 'unknown'
+            
+            # 获取Cursor根目录
+            base = self.cursor_root()
+            workspace_storage = base / "User" / "workspaceStorage"
+            workspace_db = workspace_storage / workspace_id / "state.vscdb"
+            
+            if not workspace_db.exists():
+                logger.warning(f"Workspace数据库不存在: {workspace_db}")
+                return 'unknown'
+            
+            # 连接数据库并查询侧边栏状态
+            con = None
+            try:
+                con = sqlite3.connect(f"file:{workspace_db}?mode=ro", uri=True)
+                cur = con.cursor()
+                
+                # 查询workbench.auxiliaryBar.hidden的值
+                auxiliary_bar_hidden = self.j(cur, "ItemTable", "workbench.auxiliaryBar.hidden")
+                
+                # 如果值为None，默认认为侧边栏是隐藏的
+                is_hidden = auxiliary_bar_hidden if auxiliary_bar_hidden is not None else True
+                
+                if is_hidden:
+                    logger.info("数据库检测：辅助栏是隐藏的，返回 'empty'")
+                    return 'empty'
+                else:
+                    logger.info("数据库检测：辅助栏是显示的，返回 'dialogue'")
+                    return 'dialogue'
+                    
+            except Exception as db_error:
+                logger.error(f"数据库查询失败: {db_error}")
+                return 'unknown'
+            finally:
+                if con:
+                    con.close()
+                    
+        except Exception as e:
+            logger.error(f"对话框状态检测失败: {e}")
             import traceback
             logger.error(f"详细错误信息: {traceback.format_exc()}")
             return 'unknown'
@@ -388,7 +436,7 @@ class CursorAutomation:
             logger.error(f"提交消息失败: {e}")
             return False
     
-    def send_to_cursor(self, text: str, max_retries: int = 3, skip_activation: bool = False) -> bool:
+    def send_to_cursor(self, text: str, max_retries: int = 1, skip_activation: bool = False) -> bool:
         """完整的发送流程
         
         Args:
@@ -404,14 +452,8 @@ class CursorAutomation:
         for attempt in range(max_retries):
             try:
                 logger.info(f"\n--- 第 {attempt + 1} 次发送尝试 ---")
-                
-                # 步骤1: 检测初始页面状态
-                logger.info("步骤1: 检测当前页面状态")
-                initial_state = self.detect_dialog_state()
-                logger.info(f"初始页面状态: {initial_state}")
-                
-                # 步骤2: 激活或打开Cursor（如果不跳过激活）
-                logger.info("步骤2: 处理Cursor窗口激活")
+                # 步骤1: 激活或打开Cursor（如果不跳过激活）
+                logger.info("步骤1: 处理Cursor窗口激活")
                 if not skip_activation:
                     logger.info("执行操作: 激活Cursor窗口")
                     activation_result = self.activate_cursor()
@@ -424,8 +466,8 @@ class CursorAutomation:
                     time.sleep(2)  # 等待Cursor稳定
                     logger.info("等待2秒让Cursor窗口稳定")
                 
-                # 步骤3: 打开聊天对话框
-                logger.info("步骤3: 打开聊天对话框")
+                # 步骤2: 打开聊天对话框
+                logger.info("步骤2: 打开聊天对话框")
                 pre_dialog_state = self.detect_dialog_state()
                 logger.info(f"打开对话框前的状态: {pre_dialog_state}")
                 
@@ -440,11 +482,8 @@ class CursorAutomation:
                     logger.warning("对话框打开失败，跳过此次尝试")
                     continue
                 
-                # 步骤4: 输入文本
-                logger.info("步骤4: 输入文本内容")
-                pre_input_state = self.detect_dialog_state()
-                logger.info(f"输入文本前的状态: {pre_input_state}")
-                
+                # 步骤3: 输入文本
+                logger.info("步骤3: 输入文本内容")
                 logger.info(f"执行操作: 输入文本内容 (长度: {len(text)} 字符)")
                 input_result = self.input_text(text)
                 logger.info(f"文本输入结果: {'成功' if input_result else '失败'}")
@@ -454,7 +493,7 @@ class CursorAutomation:
                     continue
                 
                 # 步骤5: 提交消息
-                logger.info("步骤5: 提交消息")
+                logger.info("步骤4: 提交消息")
                 logger.info("执行操作: 调用submit_message方法")
                 submit_result = self.submit_message()
                 logger.info(f"消息提交结果: {'成功' if submit_result else '失败'}")
@@ -464,7 +503,7 @@ class CursorAutomation:
                     continue
                 
                 # 步骤6: 验证最终状态
-                logger.info("步骤6: 验证发送完成状态")
+                logger.info("步骤5: 验证发送完成状态")
                 final_state = self.detect_dialog_state()
                 logger.info(f"最终页面状态: {final_state}")
                 
