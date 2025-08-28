@@ -67,6 +67,71 @@ class CursorAutomation:
         except Exception as e:
             logger.error(f"获取workspace ID失败: {e}")
             return None
+
+    def get_latest_session_id(self, workspace_id: str = None) -> Optional[str]:
+        """获取最新的session_id（composerId）
+        
+        Args:
+            workspace_id: 目标workspace ID，如果为None则使用最新的
+            
+        Returns:
+            Optional[str]: 最新的session_id，如果未找到返回None
+        """
+        try:
+            logger.info("=== 开始获取最新session_id ===")
+            
+            # 如果没有指定workspace_id，获取最新的
+            if not workspace_id:
+                workspace_id = self.get_workspace_id()
+                if not workspace_id:
+                    logger.error("无法获取workspace_id")
+                    return None
+            
+            logger.info(f"目标workspace_id: {workspace_id}")
+            
+            # 获取Cursor根目录
+            base = self.cursor_root()
+            workspace_db_path = base / "User" / "workspaceStorage" / workspace_id / "state.vscdb"
+            
+            if not workspace_db_path.exists():
+                logger.error(f"Workspace数据库不存在: {workspace_db_path}")
+                return None
+            
+            # 连接数据库
+            con = sqlite3.connect(f"file:{workspace_db_path}?mode=ro", uri=True)
+            cur = con.cursor()
+            
+            # 获取最新的composer数据
+            composer_data = self.j(cur, "ItemTable", "composer.composerData")
+            if composer_data and "allComposers" in composer_data:
+                composers = composer_data["allComposers"]
+                if composers:
+                    # 按lastUpdatedAt排序，获取最新的
+                    latest_composer = max(composers, key=lambda x: x.get("lastUpdatedAt", 0))
+                    session_id = latest_composer.get("composerId")
+                    logger.info(f"找到最新session_id: {session_id}")
+                    con.close()
+                    return session_id
+            
+            # 如果没有找到composer数据，尝试从chat data获取
+            chat_data = self.j(cur, "ItemTable", "workbench.panel.aichat.view.aichat.chatdata")
+            if chat_data and "tabs" in chat_data:
+                tabs = chat_data["tabs"]
+                if tabs:
+                    # 获取最新的tab
+                    latest_tab = max(tabs, key=lambda x: x.get("lastUpdatedAt", 0))
+                    session_id = latest_tab.get("tabId")
+                    logger.info(f"从chat data找到最新session_id: {session_id}")
+                    con.close()
+                    return session_id
+            
+            con.close()
+            logger.warning("未找到任何session_id")
+            return None
+            
+        except Exception as e:
+            logger.error(f"获取最新session_id失败: {e}")
+            return None
     
     def detect_dialog_state(self, workspace_id: str = None) -> str:
         try:
@@ -144,42 +209,84 @@ class CursorAutomation:
         logger.warning(f"等待状态 {expected_state} 超时")
         return False
         
+    def close_cursor(self) -> bool:
+        """关闭Cursor应用"""
+        try:
+            logger.info("=== 开始关闭Cursor应用 ===")
+            
+            if self.system == 'Darwin':
+                # macOS: 使用AppleScript关闭Cursor
+                script = '''
+                tell application "Cursor"
+                    quit
+                end tell
+                '''
+                result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+                if result.returncode == 0:
+                    logger.info("✓ 成功关闭Cursor应用")
+                    time.sleep(3)  # 等待应用完全关闭
+                    return True
+                else:
+                    logger.error(f"✗ 关闭Cursor失败: {result.stderr}")
+                    return False
+            else:
+                # Windows/Linux: 使用进程管理关闭
+                try:
+                    import psutil
+                    for proc in psutil.process_iter(['pid', 'name']):
+                        try:
+                            if 'cursor' in proc.info['name'].lower():
+                                proc.terminate()
+                                logger.info(f"✓ 已终止Cursor进程 (PID: {proc.info['pid']})")
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+                    
+                    time.sleep(3)  # 等待进程完全关闭
+                    return True
+                except ImportError:
+                    logger.warning("psutil模块未安装，无法优雅关闭Cursor")
+                    return True  # 假设关闭成功
+                except Exception as e:
+                    logger.error(f"关闭Cursor进程失败: {e}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"关闭Cursor应用失败: {e}")
+            return False
+
     def open_cursor(self) -> bool:
         """打开Cursor应用"""
         try:
+            logger.info("=== 开始打开Cursor应用 ===")
+            
             if self.system == 'Darwin':
-                # Mac: 使用open命令打开Cursor
-                subprocess.run(['open', '-a', 'Cursor'])
-            elif self.system == 'Windows':
-                # Windows: 尝试通过开始菜单或直接路径打开
-                try:
-                    # This is the most reliable way if the protocol is registered
-                    subprocess.run(['start', 'cursor:'], shell=True, check=True)
-                except (subprocess.CalledProcessError, FileNotFoundError):
-                    logger.warning("Could not open Cursor via protocol, trying common paths.")
-                    # Fallback to common installation paths
-                    possible_paths = [
-                        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Cursor", "Cursor.exe"),
-                        os.path.join(os.environ.get("ProgramFiles", ""), "Cursor", "Cursor.exe"),
-                    ]
-                    for path in possible_paths:
-                        if os.path.exists(path):
-                            subprocess.run([path])
-                            logger.info(f"Found and opened Cursor at: {path}")
-                            break
-                    else:
-                        logger.error("Could not find Cursor.exe in common locations.")
-                        return False
+                # macOS: 使用AppleScript打开Cursor
+                script = '''
+                tell application "Cursor"
+                    activate
+                end tell
+                '''
+                result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+                if result.returncode == 0:
+                    logger.info("✓ 成功打开Cursor应用")
+                    time.sleep(5)  # 等待应用完全启动
+                    return True
+                else:
+                    logger.error(f"✗ 打开Cursor失败: {result.stderr}")
+                    return False
             else:
-                # Linux
-                subprocess.run(['cursor'])
-            
-            logger.info("已尝试打开Cursor")
-            time.sleep(3)  # 等待应用启动
-            return True
-            
+                # Windows/Linux: 使用subprocess打开
+                try:
+                    subprocess.Popen(['cursor'], shell=True)
+                    logger.info("✓ 成功启动Cursor应用")
+                    time.sleep(5)  # 等待应用完全启动
+                    return True
+                except Exception as e:
+                    logger.error(f"启动Cursor失败: {e}")
+                    return False
+                    
         except Exception as e:
-            logger.error(f"打开Cursor失败: {e}")
+            logger.error(f"打开Cursor应用失败: {e}")
             return False
     
     def activate_cursor(self) -> bool:
@@ -299,6 +406,11 @@ class CursorAutomation:
                 logger.info("跳过对话框激活步骤")
                 time.sleep(0.5)  # 短暂等待
             
+            # 清除可能的输入缓冲区
+            logger.info("清除输入缓冲区")
+            pyautogui.press('escape')  # 按ESC清除可能的输入状态
+            time.sleep(0.5)
+            
             # 根据系统发送不同的快捷键
             if self.system == 'Darwin':
                 # Mac: Option+Command+B
@@ -312,6 +424,10 @@ class CursorAutomation:
             # 等待对话框打开并验证
             if self.wait_for_dialog_state('dialogue', timeout=5, workspace_id=workspace_id):
                 logger.info("对话框成功打开")
+                # 再次清除可能的输入
+                time.sleep(0.5)
+                pyautogui.press('escape')
+                time.sleep(0.5)
                 return True
             else:
                 logger.warning("对话框可能未成功打开")
@@ -319,6 +435,48 @@ class CursorAutomation:
             
         except Exception as e:
             logger.error(f"打开聊天对话框失败: {e}")
+            return False
+
+    def create_new_chat(self, skip_activation: bool = False, workspace_id: str = None) -> bool:
+        """创建新对话（Command+T）
+        
+        Args:
+            skip_activation: 是否跳过激活步骤
+            workspace_id: 目标workspace ID，如果为None则使用最新的
+        """
+        try:
+            logger.info("=== 开始创建新对话 ===")
+            
+            # 确保Cursor是活动窗口（如果不跳过激活）
+            if not skip_activation:
+                self.activate_cursor()
+                time.sleep(1)  # 等待窗口激活
+            else:
+                logger.info("跳过激活步骤")
+                time.sleep(0.5)  # 短暂等待
+            
+            # 清除可能的输入缓冲区
+            logger.info("清除输入缓冲区")
+            pyautogui.press('escape')  # 按ESC清除可能的输入状态
+            time.sleep(0.5)
+            
+            # 发送Command+T创建新对话
+            pyautogui.hotkey(self.modifier, 't')
+            logger.info(f"已发送快捷键 {self.modifier.upper()}+T 创建新对话")
+            
+            # 等待新对话创建完成
+            time.sleep(2)
+            
+            # 再次清除可能的输入
+            logger.info("清除新对话创建后的输入")
+            pyautogui.press('escape')
+            time.sleep(0.5)
+            
+            logger.info("新对话创建完成")
+            return True
+            
+        except Exception as e:
+            logger.error(f"创建新对话失败: {e}")
             return False
     
     def open_ai_sidebar(self, skip_activation: bool = False) -> bool:
@@ -373,6 +531,11 @@ class CursorAutomation:
             
             # 等待对话框稳定
             time.sleep(1)
+            
+            # 清除可能的输入缓冲区
+            logger.info("清除输入缓冲区")
+            pyautogui.press('escape')  # 按ESC清除可能的输入状态
+            time.sleep(0.5)
             
             # 尝试多种输入方法
             success = False
@@ -448,7 +611,7 @@ class CursorAutomation:
             logger.error(f"提交消息失败: {e}")
             return False
     
-    def send_to_cursor(self, text: str, max_retries: int = 1, skip_activation: bool = False, workspace_id: str = None) -> bool:
+    def send_to_cursor(self, text: str, max_retries: int = 1, skip_activation: bool = False, workspace_id: str = None, force_restart: bool = False, create_new_chat: bool = False) -> tuple[bool, Optional[str]]:
         """完整的发送流程
         
         Args:
@@ -456,18 +619,45 @@ class CursorAutomation:
             max_retries: 最大重试次数
             skip_activation: 是否跳过激活步骤（当刚切换项目后使用）
             workspace_id: 目标workspace ID，如果为None则使用最新的
+            force_restart: 是否强制重启Cursor（首次发送时使用）
+            create_new_chat: 是否创建新对话
+            
+        Returns:
+            tuple[bool, Optional[str]]: (是否成功, session_id)
         """
         logger.info("=== 开始消息发送流程 ===")
         logger.info(f"目标消息: {text[:50]}{'...' if len(text) > 50 else ''}")
         logger.info(f"最大重试次数: {max_retries}")
         logger.info(f"跳过激活: {skip_activation}")
+        logger.info(f"强制重启: {force_restart}")
+        
+        # 如果强制重启且没有跳过激活（说明不是刚切换项目），先关闭再打开Cursor
+        if force_restart and not skip_activation:
+            logger.info("=== 执行强制重启流程 ===")
+            logger.info("步骤1: 关闭Cursor应用")
+            close_success = self.close_cursor()
+            if not close_success:
+                logger.warning("关闭Cursor失败，但继续尝试")
+            
+            logger.info("步骤2: 等待Cursor完全关闭")
+            time.sleep(3)
+            
+            logger.info("步骤3: 重新打开Cursor应用")
+            open_success = self.open_cursor()
+            if not open_success:
+                logger.error("重新打开Cursor失败")
+                return False
+            
+            logger.info("步骤4: 等待Cursor完全启动")
+            time.sleep(5)
+            logger.info("=== 强制重启完成 ===")
         
         for attempt in range(max_retries):
             try:
                 logger.info(f"\n--- 第 {attempt + 1} 次发送尝试 ---")
-                # 步骤1: 激活或打开Cursor（如果不跳过激活）
+                # 步骤1: 激活或打开Cursor（如果不跳过激活且没有强制重启）
                 logger.info("步骤1: 处理Cursor窗口激活")
-                if not skip_activation:
+                if not skip_activation and not force_restart:
                     logger.info("执行操作: 激活Cursor窗口")
                     activation_result = self.activate_cursor()
                     logger.info(f"激活结果: {'成功' if activation_result else '失败'}")
@@ -475,7 +665,10 @@ class CursorAutomation:
                         logger.warning("激活失败，跳过此次尝试")
                         continue
                 else:
-                    logger.info("执行操作: 跳过激活步骤，使用当前Cursor窗口")
+                    if force_restart:
+                        logger.info("执行操作: 跳过激活步骤（已强制重启）")
+                    else:
+                        logger.info("执行操作: 跳过激活步骤，使用当前Cursor窗口")
                     time.sleep(2)  # 等待Cursor稳定
                     logger.info("等待2秒让Cursor窗口稳定")
                 
@@ -485,7 +678,7 @@ class CursorAutomation:
                 logger.info(f"打开对话框前的状态: {pre_dialog_state}")
                 
                 logger.info("执行操作: 调用open_chat_dialog方法")
-                dialog_result = self.open_chat_dialog(skip_activation=skip_activation, workspace_id=workspace_id)
+                dialog_result = self.open_chat_dialog(skip_activation=skip_activation or force_restart, workspace_id=workspace_id)
                 logger.info(f"对话框打开结果: {'成功' if dialog_result else '失败'}")
                 
                 if dialog_result:
@@ -494,6 +687,16 @@ class CursorAutomation:
                 else:
                     logger.warning("对话框打开失败，跳过此次尝试")
                     continue
+                
+                # 步骤2.5: 如果需要创建新对话
+                if create_new_chat:
+                    logger.info("步骤2.5: 创建新对话")
+                    new_chat_result = self.create_new_chat(skip_activation=True, workspace_id=workspace_id)
+                    logger.info(f"新对话创建结果: {'成功' if new_chat_result else '失败'}")
+                    
+                    if not new_chat_result:
+                        logger.warning("新对话创建失败，跳过此次尝试")
+                        continue
                 
                 # 步骤3: 输入文本
                 logger.info("步骤3: 输入文本内容")
@@ -520,8 +723,18 @@ class CursorAutomation:
                 final_state = self.detect_dialog_state(workspace_id)
                 logger.info(f"最终页面状态: {final_state}")
                 
+                # 步骤7: 如果需要获取session_id
+                session_id = None
+                if create_new_chat:
+                    logger.info("步骤6: 获取新创建的session_id")
+                    session_id = self.get_latest_session_id(workspace_id)
+                    if session_id:
+                        logger.info(f"获取到新session_id: {session_id}")
+                    else:
+                        logger.warning("无法获取新session_id")
+                
                 logger.info("=== 消息发送成功！===")
-                return True
+                return True, session_id
                 
             except Exception as e:
                 logger.error(f"第 {attempt + 1} 次尝试发生异常: {e}")
@@ -531,7 +744,7 @@ class CursorAutomation:
                 logger.info(f"等待2秒后进行下一次尝试")
         
         logger.error(f"=== 所有 {max_retries} 次尝试都失败 ===")
-        return False
+        return False, None
     
     def _find_cursor_cmd_on_windows(self) -> Optional[str]:
         """Find the path to the cursor.cmd on Windows."""
@@ -559,6 +772,18 @@ class CursorAutomation:
                 logger.warning(f"目标路径不存在: {root_path}")
                 # Still try to proceed, as Cursor might handle it
             
+            # 步骤1: 关闭当前Cursor实例
+            logger.info("步骤1: 关闭当前Cursor实例")
+            close_success = self.close_cursor()
+            if not close_success:
+                logger.warning("关闭Cursor失败，但继续尝试切换项目")
+            
+            # 步骤2: 等待一段时间确保完全关闭
+            logger.info("步骤2: 等待Cursor完全关闭")
+            time.sleep(2)
+            
+            # 步骤3: 使用命令行打开新项目
+            logger.info("步骤3: 打开新项目")
             if self.system == 'Darwin':
                 logger.info("执行方式: macOS Terminal + AppleScript")
                 script = f'''
@@ -570,7 +795,7 @@ class CursorAutomation:
                 result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
                 if result.returncode == 0:
                     logger.info(f"✓ 成功在Terminal中执行: cursor '{root_path}'")
-                    time.sleep(5)
+                    time.sleep(8)  # 增加等待时间，确保Cursor完全启动
                     return True
                 else:
                     logger.error(f"✗ Terminal脚本执行失败: {result.stderr}")
@@ -586,7 +811,7 @@ class CursorAutomation:
                 except (FileNotFoundError, subprocess.TimeoutExpired) as e:
                     if isinstance(e, subprocess.TimeoutExpired):
                          logger.warning("`cursor` command timed out. Assuming it worked.")
-                         time.sleep(5)
+                         time.sleep(8)  # 增加等待时间
                          return True
 
                     logger.warning(f"`cursor` command failed or not in PATH. Searching common locations...")
@@ -600,7 +825,7 @@ class CursorAutomation:
                         try:
                             subprocess.run(command, timeout=15, shell=True) # shell=True for .cmd
                             logger.info(f"✓ 成功执行: {' '.join(command)}")
-                            time.sleep(5)
+                            time.sleep(8)  # 增加等待时间
                             return True
                         except Exception as final_e:
                             logger.error(f"✗ 执行cursor.cmd失败: {final_e}")
@@ -610,7 +835,7 @@ class CursorAutomation:
                         return False
 
                 logger.info(f"✓ 成功执行: {' '.join(command)}")
-                time.sleep(5)
+                time.sleep(8)  # 增加等待时间
                 return True
                     
         except Exception as e:
@@ -636,16 +861,21 @@ def main():
         print("❌ 发送失败，请检查Cursor是否安装并运行")
 
 # 如果从其他模块调用
-def receive_from_app(text: str, skip_activation: bool = False, workspace_id: str = None):
+def receive_from_app(text: str, skip_activation: bool = False, workspace_id: str = None, force_restart: bool = False, create_new_chat: bool = False):
     """从你的App调用这个函数
     
     Args:
         text: 要发送的文本
         skip_activation: 是否跳过激活步骤（当刚切换项目后使用）
         workspace_id: 目标workspace ID，如果为None则使用最新的
+        force_restart: 是否强制重启Cursor（首次发送时使用）
+        create_new_chat: 是否创建新对话
+        
+    Returns:
+        tuple[bool, Optional[str]]: (是否成功, session_id)
     """
     automator = CursorAutomation()
-    return automator.send_to_cursor(text, skip_activation=skip_activation, workspace_id=workspace_id)
+    return automator.send_to_cursor(text, skip_activation=skip_activation, workspace_id=workspace_id, force_restart=force_restart, create_new_chat=create_new_chat)
 
 def switch_cursor_project(root_path: str):
     """切换Cursor到指定项目目录"""

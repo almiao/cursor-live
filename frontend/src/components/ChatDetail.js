@@ -37,6 +37,7 @@ import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import WarningIcon from '@mui/icons-material/Warning';
 import SendIcon from '@mui/icons-material/Send';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import AddIcon from '@mui/icons-material/Add';
 import { colors } from '../App';
 
 const ChatDetail = () => {
@@ -334,10 +335,18 @@ const ChatDetail = () => {
       const payload = {
         message: inputText.trim(),
         workspace_id: chat?.workspace_id,
-        rootPath: chat?.project?.rootPath
+        rootPath: chat?.project?.rootPath,
+        create_new_chat: false // 默认不创建新对话
       };
       
-      await axios.post('/api/send-to-cursor', payload);
+      const response = await axios.post('/api/send-to-cursor', payload);
+      
+      // 检查是否返回了新的session_id
+      if (response.data.session_id) {
+        console.log('收到新session_id:', response.data.session_id);
+        // 可以在这里处理新对话的逻辑
+      }
+      
       setInputText('');
       
       // 发送完成后，提高刷新频率到5秒
@@ -353,11 +362,50 @@ const ChatDetail = () => {
     }
   };
 
+  // 创建新对话并发送消息
+  const handleCreateNewChat = async () => {
+    if (!inputText.trim() || sending) return;
+    
+    setSending(true);
+    try {
+      // 携带workspace_id和rootPath参数，并设置create_new_chat为true
+      const payload = {
+        message: inputText.trim(),
+        workspace_id: chat?.workspace_id,
+        rootPath: chat?.project?.rootPath,
+        create_new_chat: true
+      };
+      
+      const response = await axios.post('/api/send-to-cursor', payload);
+      
+      // 检查是否返回了新的session_id
+      if (response.data.session_id) {
+        console.log('新对话创建成功，session_id:', response.data.session_id);
+        // 导航到新的对话页面
+        window.location.href = `/chat/${response.data.session_id}`;
+      } else {
+        console.warn('未收到新session_id');
+        setInputText('');
+      }
+      
+    } catch (err) {
+      console.error('创建新对话失败:', err);
+      alert('创建新对话失败，请检查后端服务是否正常运行');
+    } finally {
+      setSending(false);
+    }
+  };
+
   // 处理回车键发送
   const handleKeyPress = (event) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
-      handleSendMessage();
+      // 检查是否按住了Shift键（用于创建新对话）
+      if (event.shiftKey) {
+        handleCreateNewChat();
+      } else {
+        handleSendMessage();
+      }
     }
   };
 
@@ -760,7 +808,7 @@ const ChatDetail = () => {
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="输入消息发送到Cursor..."
+              placeholder="输入消息发送到Cursor... (Shift+Enter创建新对话)"
               variant="outlined"
               size="small"
               disabled={sending}
@@ -785,8 +833,28 @@ const ChatDetail = () => {
                   color: 'action.disabled'
                 }
               }}
+              title="发送消息"
             >
               <SendIcon />
+            </IconButton>
+            <IconButton
+              onClick={handleCreateNewChat}
+              disabled={!inputText.trim() || sending}
+              color="secondary"
+              sx={{
+                bgcolor: colors.secondary.main,
+                color: 'white',
+                '&:hover': {
+                  bgcolor: alpha(colors.secondary.main, 0.8),
+                },
+                '&:disabled': {
+                  bgcolor: 'action.disabled',
+                  color: 'action.disabled'
+                }
+              }}
+              title="创建新对话并发送"
+            >
+              <AddIcon />
             </IconButton>
           </Box>
         </Container>

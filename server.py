@@ -1348,6 +1348,9 @@ def send_to_cursor():
         
         # 检查workspace_id是否与当前暂存的一致
         project_switched = False
+        force_restart = False
+        
+        # 判断是否需要强制重启Cursor
         if workspace_id and workspace_id != current_workspace_id:
             logger.info(f"Workspace changed from {current_workspace_id} to {workspace_id}")
             
@@ -1365,14 +1368,31 @@ def send_to_cursor():
                 project_switched = True
             else:
                 logger.warning("Workspace ID provided but no rootPath available for switching")
+        elif current_workspace_id is None:
+            # 首次发送消息时强制重启
+            logger.info("First time sending message, forcing Cursor restart")
+            force_restart = True
+        
+        # 检查是否需要创建新对话
+        create_new_chat = data.get('create_new_chat', False)
         
         # 调用pyautogui发送消息到Cursor
-        # 如果刚切换了项目，跳过激活步骤避免重复操作
-        success = receive_from_app(message, skip_activation=project_switched, workspace_id=workspace_id)
+        # 如果刚切换了项目或首次发送，跳过激活步骤避免重复操作
+        result = receive_from_app(message, skip_activation=project_switched, workspace_id=workspace_id, force_restart=force_restart, create_new_chat=create_new_chat)
+        
+        # 解析返回结果
+        if isinstance(result, tuple):
+            success, session_id = result
+        else:
+            success, session_id = result, None
         
         if success:
             logger.info("Message successfully sent to Cursor")
-            return jsonify({"success": True, "message": "Message sent to Cursor successfully"})
+            response_data = {"success": True, "message": "Message sent to Cursor successfully"}
+            if session_id:
+                response_data["session_id"] = session_id
+                logger.info(f"New session created with ID: {session_id}")
+            return jsonify(response_data)
         else:
             logger.error("Failed to send message to Cursor")
             return jsonify({"error": "Failed to send message to Cursor. Please ensure Cursor is running and accessible."}), 500
@@ -1567,7 +1587,7 @@ def serve_react(path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run the Cursor Chat View server')
-    parser.add_argument('--port', type=int, default=5000, help='Port to run the server on')
+    parser.add_argument('--port', type=int, default=5004, help='Port to run the server on')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
     args = parser.parse_args()
     
