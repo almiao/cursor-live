@@ -27,7 +27,7 @@ Cursor View is a local tool to view, search, and export all your Cursor AI chat 
    ```
    python3 server.py
    ```
-6. Open your browser to http://localhost:5000
+6. Open your browser to the displayed URL (local or LAN)
 
 ## Message Sending Features
 
@@ -50,6 +50,20 @@ The application now supports sending messages directly to Cursor AI chat with in
 - Cursor must be installed and accessible via command line (`cursor` command)
 - For Windows/Linux: `psutil` package is required for process management
 - Proper permissions for AppleScript execution on macOS
+
+## Network Access
+
+The server automatically detects and displays both local and LAN access URLs:
+
+- **Local access**: `http://localhost:5004` (for the same machine)
+- **LAN access**: `http://192.168.x.x:5004` (for other devices on the same network)
+
+The LAN IP address is automatically detected and displayed in:
+- Server startup console output
+- Web interface header (as a chip with WiFi icon)
+- API endpoint `/api/server/info`
+
+This allows easy access from mobile devices or other computers on the same network.
 
 ## Features
 

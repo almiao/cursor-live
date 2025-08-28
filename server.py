@@ -852,6 +852,23 @@ def get_chat(session_id):
         logger.error(f"Error in get_chat: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/server/info', methods=['GET'])
+def get_server_info():
+    """获取服务器信息"""
+    try:
+        local_ip = get_local_ip()
+        server_info = {
+            "local_ip": local_ip,
+            "port": request.environ.get('SERVER_PORT', '5004'),
+            "host": request.environ.get('SERVER_NAME', 'localhost'),
+            "local_url": f"http://localhost:{request.environ.get('SERVER_PORT', '5004')}",
+            "lan_url": f"http://{local_ip}:{request.environ.get('SERVER_PORT', '5004')}"
+        }
+        return jsonify(server_info)
+    except Exception as e:
+        logger.error(f"Error getting server info: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/cursor/status', methods=['GET'])
 def get_cursor_status():
     """获取Cursor应用的状态信息"""
@@ -1585,6 +1602,37 @@ def serve_react(path):
         return send_from_directory(app.static_folder, 'index.html')
     return "Static folder not configured", 404
 
+def get_local_ip():
+    """获取本机的局域网IP地址"""
+    try:
+        import socket
+        # 创建一个UDP socket连接到外部地址来获取本机IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception as e:
+        logger.warning(f"无法获取局域网IP地址: {e}")
+        return "127.0.0.1"
+
+def print_server_info(port, debug=False):
+    """打印服务器信息"""
+    local_ip = get_local_ip()
+    
+    print("\n" + "=" * 60)
+    print("🚀 Cursor Chat View 服务器已启动")
+    print("=" * 60)
+    print(f"📱 本地访问: http://localhost:{port}")
+    print(f"🌐 局域网访问: http://{local_ip}:{port}")
+    print(f"🔧 调试模式: {'开启' if debug else '关闭'}")
+    print("=" * 60)
+    print("💡 提示:")
+    print(f"   - 确保防火墙允许端口 {port} 的访问")
+    print("   - 其他设备可以通过局域网IP访问")
+    print("   - 按 Ctrl+C 停止服务器")
+    print("=" * 60 + "\n")
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run the Cursor Chat View server')
     parser.add_argument('--port', type=int, default=5004, help='Port to run the server on')
@@ -1592,4 +1640,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     logger.info(f"Starting server on port {args.port}")
+    
+    # 打印服务器信息
+    print_server_info(args.port, args.debug)
+    
     app.run(host='0.0.0.0', port=args.port, debug=args.debug)

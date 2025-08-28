@@ -1,12 +1,32 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { AppBar, Toolbar, Typography, Box, Container, Button } from '@mui/material';
+import { AppBar, Toolbar, Typography, Box, Container, Button, Chip, Tooltip } from '@mui/material';
 import ChatIcon from '@mui/icons-material/Chat';
 import GitHubIcon from '@mui/icons-material/GitHub';
 import BugReportIcon from '@mui/icons-material/BugReport';
+import WifiIcon from '@mui/icons-material/Wifi';
 import { colors } from '../App';
 
 const Header = () => {
+  const [serverInfo, setServerInfo] = useState(null);
+
+  useEffect(() => {
+    // 获取服务器信息
+    const fetchServerInfo = async () => {
+      try {
+        const response = await fetch('/api/server/info');
+        if (response.ok) {
+          const data = await response.json();
+          setServerInfo(data);
+        }
+      } catch (error) {
+        console.error('获取服务器信息失败:', error);
+      }
+    };
+
+    fetchServerInfo();
+  }, []);
+
   return (
     <AppBar position="static" sx={{ mb: 4 }}>
       <Container>
@@ -26,6 +46,27 @@ const Header = () => {
               Cursor View
             </Typography>
           </Box>
+          
+          {/* 服务器信息显示 */}
+          {serverInfo && (
+            <Box sx={{ display: 'flex', alignItems: 'center', mr: 2 }}>
+              <Tooltip title={`局域网访问: ${serverInfo.lan_url}`}>
+                <Chip
+                  icon={<WifiIcon />}
+                  label={`${serverInfo.local_ip}:${serverInfo.port}`}
+                  size="small"
+                  sx={{
+                    backgroundColor: 'rgba(255,255,255,0.2)',
+                    color: 'white',
+                    border: '1px solid rgba(255,255,255,0.3)',
+                    '&:hover': {
+                      backgroundColor: 'rgba(255,255,255,0.3)',
+                    }
+                  }}
+                />
+              </Tooltip>
+            </Box>
+          )}
           
           <Button 
             component={Link}
