@@ -1,5 +1,5 @@
 import pyautogui
-from pyautogui import ImageNotFoundException
+# 移除 ImageNotFoundException 导入，因为已改为数据库检测
 import time
 import subprocess
 import platform
@@ -17,58 +17,102 @@ class CursorAutomation:
         self.modifier = 'command' if self.system == 'Darwin' else 'ctrl'
         self.alt_modifier = 'option' if self.system == 'Darwin' else 'alt'
         
-        # 图像文件路径
-        self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.dialogue_image = os.path.join(self.base_dir, 'cursor_dialogue.png')
-        self.empty_image = os.path.join(self.base_dir, 'cursor_empty.png')
+        # 移除图像文件路径定义，因为已改为数据库检测
         
         # 设置pyautogui的置信度
         pyautogui.FAILSAFE = True
         
-    def detect_dialog_state(self) -> str:
-        """检测当前对话框状态
+    def detect_dialog_state(self, workspace_id: str = None) -> str:
+        """检测当前对话框状态（基于workbench.auxiliaryBar.hidden）
         
+        Args:
+            workspace_id: 工作空间ID（必需，用于检查特定工作空间的侧边栏状态）
+            
         Returns:
             str: 'dialogue' - 检测到对话框, 'empty' - 检测到空白界面, 'unknown' - 未检测到已知状态
         """
         try:
-            logger.info("开始图像检测...")
-            
-            # 检测是否有对话框
-            if os.path.exists(self.dialogue_image):
-                logger.info(f"正在检测对话框图像: {self.dialogue_image}")
-                try:
-                    dialogue_location = pyautogui.locateOnScreen(self.dialogue_image, confidence=0.8)
-                    logger.info(f"图像检测：检测到对话框已打开，位置: {dialogue_location}")
-                    return 'dialogue'
-                except ImageNotFoundException:
-                    logger.info("图像检测：未检测到对话框")
-                except Exception as e:
-                    logger.warning(f"对话框图像检测异常: {e}")
+            if workspace_id:
+                logger.info(f"开始检测对话框状态 (workspace_id: {workspace_id})...")
             else:
-                logger.warning(f"对话框图像文件不存在: {self.dialogue_image}")
+                logger.warning("未提供workspace_id，无法检测对话框状态")
+                return 'unknown'
             
-            # 检测是否是空白界面
-            if os.path.exists(self.empty_image):
-                logger.info(f"正在检测空白界面图像: {self.empty_image}")
-                try:
-                    empty_location = pyautogui.locateOnScreen(self.empty_image, confidence=0.8)
-                    logger.info(f"图像检测：检测到空白界面，位置: {empty_location}")
-                    return 'empty'
-                except ImageNotFoundException:
-                    logger.info("图像检测：未检测到空白界面")
-                except Exception as e:
-                    logger.warning(f"空白界面图像检测异常: {e}")
-            else:
-                logger.warning(f"空白界面图像文件不存在: {self.empty_image}")
-            
-            logger.info("图像检测：未检测到已知状态")
-            return 'unknown'
+            # 参考 /api/cursor/status 的实现，使用 workbench.auxiliaryBar.hidden 检查
+            try:
+                import sys
+                import os
+                import sqlite3
+                import json
+                import pathlib
+                import platform
+                
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                if current_dir not in sys.path:
+                    sys.path.insert(0, current_dir)
+                
+                # 获取Cursor根目录
+                def cursor_root() -> pathlib.Path:
+                    h = pathlib.Path.home()
+                    s = platform.system()
+                    if s == "Darwin":   return h / "Library" / "Application Support" / "Cursor"
+                    if s == "Windows":  return h / "AppData" / "Roaming" / "Cursor"
+                    if s == "Linux":    return h / ".config" / "Cursor"
+                    raise RuntimeError(f"Unsupported OS: {s}")
+                
+                # 辅助函数：查询数据库
+                def j(cur: sqlite3.Cursor, table: str, key: str):
+                    cur.execute(f"SELECT value FROM {table} WHERE key=?", (key,))
+                    row = cur.fetchone()
+                    if row:
+                        try:    return json.loads(row[0])
+                        except Exception as e: 
+                            logger.debug(f"Failed to parse JSON for {key}: {e}")
+                    return None
+                
+                # 获取Cursor根目录
+                base = cursor_root()
+                workspace_storage = base / "User" / "workspaceStorage"
+                
+                # 构建workspace数据库路径
+                workspace_db = workspace_storage / workspace_id / "state.vscdb"
+                
+                if workspace_db.exists():
+                    # 连接数据库并查询侧边栏状态
+                    con = None
+                    try:
+                        con = sqlite3.connect(f"file:{workspace_db}?mode=ro", uri=True)
+                        cur = con.cursor()
+                        
+                        # 查询workbench.auxiliaryBar.hidden的值
+                        auxiliary_bar_hidden = j(cur, "ItemTable", "workbench.auxiliaryBar.hidden")
+                        
+                        # 如果值为None，默认认为侧边栏是隐藏的
+                        is_hidden = auxiliary_bar_hidden if auxiliary_bar_hidden is not None else True
+                        
+                        if not is_hidden:
+                            logger.info("检测到AI侧边栏已打开")
+                            return 'dialogue'
+                        else:
+                            logger.info("检测到AI侧边栏已隐藏")
+                            return 'empty'
+                        
+                    except Exception as db_error:
+                        logger.warning(f"数据库查询失败: {db_error}")
+                        return 'unknown'
+                    finally:
+                        if con:
+                            con.close()
+                else:
+                    logger.warning(f"Workspace数据库不存在: {workspace_id}")
+                    return 'unknown'
+                    
+            except Exception as e:
+                logger.error(f"检测对话框状态时出错: {e}")
+                return 'unknown'
             
         except Exception as e:
-            logger.error(f"图像检测失败: {e}")
-            import traceback
-            logger.error(f"详细错误信息: {traceback.format_exc()}")
+            logger.error(f"对话框状态检测失败: {e}")
             return 'unknown'
     
     def wait_for_dialog_state(self, expected_state: str, timeout: int = 10) -> bool:
