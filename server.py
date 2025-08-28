@@ -1337,7 +1337,10 @@ def send_to_cursor():
             return jsonify({"error": "Missing 'message' field in request"}), 400
         
         message = data['message'].strip()
-        if not message:
+        create_new_chat = data.get('create_new_chat', False)
+        
+        # 只有在不是创建新对话时才要求消息不能为空
+        if not create_new_chat and not message:
             return jsonify({"error": "Message cannot be empty"}), 400
         
         # 获取workspace_id和rootPath
@@ -1390,8 +1393,7 @@ def send_to_cursor():
             logger.info("First time sending message, forcing Cursor restart")
             force_restart = True
         
-        # 检查是否需要创建新对话
-        create_new_chat = data.get('create_new_chat', False)
+        # create_new_chat 已经在前面获取了
         
         # 调用pyautogui发送消息到Cursor
         # 如果刚切换了项目或首次发送，跳过激活步骤避免重复操作

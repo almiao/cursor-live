@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
   Container,
@@ -41,9 +41,23 @@ import SearchIcon from '@mui/icons-material/Search';
 import ClearIcon from '@mui/icons-material/Clear';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import WarningIcon from '@mui/icons-material/Warning';
-import { colors } from '../App';
+import AddIcon from '@mui/icons-material/Add';
+// 移除 colors 导入，避免模块初始化问题
 
 const ChatList = () => {
+  // 在组件内部定义 safeColors，避免模块初始化问题
+  const safeColors = {
+    text: {
+      primary: '#FFFFFF',
+      secondary: '#B3B3B3'
+    },
+    highlightColor: '#0cbcff8f',
+    background: {
+      paper: '#1E1E1E'
+    }
+  };
+
+  const navigate = useNavigate();
   const [chats, setChats] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -54,6 +68,7 @@ const ChatList = () => {
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [dontShowExportWarning, setDontShowExportWarning] = useState(false);
   const [currentExportSession, setCurrentExportSession] = useState(null);
+  const [isCreatingNewChat, setIsCreatingNewChat] = useState(false);
 
   const fetchChats = async () => {
     setLoading(true);
@@ -264,7 +279,7 @@ const ChatList = () => {
       }
 
       // Ensure the blob has the correct MIME type before saving
-      const typedBlob = blob.type ? blob : new Blob([blob], { type: 'text/html;charset=utf-8' });
+      const typedBlob = blob && blob.type ? blob : new Blob([blob || ''], { type: 'text/html;charset=utf-8' });
       console.log('Prepared typed blob, size:', typedBlob.size);
 
       // --- Download Logic Start ---
@@ -316,10 +331,104 @@ const ChatList = () => {
     }
   };
 
+  /**
+   * 处理新增对话按钮点击事件
+   * 调用后端send_to_cursor接口创建新对话，然后跳转到ChatDetail页面
+   */
+  const handleNewChat = async (e, chat) => {
+    // 阻止事件冒泡，避免触发卡片的点击事件
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (isCreatingNewChat) return; // 防止重复点击
+    
+    setIsCreatingNewChat(true);
+    
+    try {
+      console.log('Creating new chat for workspace:', chat?.workspace_id);
+      
+      // 调用现有的send_to_cursor接口，传递空消息和create_new_chat=true
+      const response = await axios.post('/api/send-to-cursor', {
+        message: '', // 空消息，仅用于创建新对话
+        workspace_id: chat?.workspace_id,
+        rootPath: chat.project?.rootPath,
+        create_new_chat: true, // 关键参数：创建新对话
+        force_restart: false // 不强制重启，因为只是创建新对话
+      });
+      
+      if (response.data.success && response.data.session_id) {
+        const sessionId = response.data.session_id;
+        console.log('New chat created with session_id:', sessionId);
+        
+        // 跳转到ChatDetail页面
+        navigate(`/chat/${sessionId}`);
+      } else {
+        throw new Error('未能获取到新的session_id');
+      }
+      
+    } catch (error) {
+      console.error('Error creating new chat:', error);
+      // 显示错误提示
+      alert('创建新对话失败，请确保Cursor正在运行并重试');
+    } finally {
+      setIsCreatingNewChat(false);
+    }
+  };
+
+  /**
+   * 处理从项目级别新增对话按钮点击事件
+   * 调用后端send_to_cursor接口创建新对话，然后跳转到ChatDetail页面
+   */
+  const handleNewChatFromProject = async (e, projectData) => {
+    // 阻止事件冒泡，避免触发卡片的点击事件
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (isCreatingNewChat) return; // 防止重复点击
+    
+    setIsCreatingNewChat(true);
+    
+    try {
+      console.log('Creating new chat for project:', projectData.name);
+      
+      // 从项目数据中获取第一个聊天的workspace_id作为参考
+      const firstChat = projectData.chats[0];
+      if (!firstChat || !firstChat.workspace_id) {
+        throw new Error('无法获取项目的工作空间信息');
+      }
+      
+      // 调用现有的send_to_cursor接口，传递空消息和create_new_chat=true
+      const response = await axios.post('/api/send-to-cursor', {
+        message: '', // 空消息，仅用于创建新对话
+        workspace_id: firstChat.workspace_id,
+        rootPath: projectData.path,
+        create_new_chat: true, // 关键参数：创建新对话
+        force_restart: false // 不强制重启，因为只是创建新对话
+      });
+      
+      if (response.data.success && response.data.session_id) {
+        const sessionId = response.data.session_id;
+        console.log('New chat created with session_id:', sessionId);
+        
+        // 跳转到ChatDetail页面
+        navigate(`/chat/${sessionId}`);
+      } else {
+        throw new Error('未能获取到新的session_id');
+      }
+      
+    } catch (error) {
+      console.error('Error creating new chat from project:', error);
+      // 显示错误提示
+      alert('创建新对话失败，请确保Cursor正在运行并重试');
+    } finally {
+      setIsCreatingNewChat(false);
+    }
+  };
+
   if (loading) {
     return (
       <Container sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '70vh' }}>
-        <CircularProgress sx={{ color: colors.highlightColor }} />
+        <CircularProgress sx={{ color: safeColors.highlightColor }} />
       </Container>
     );
   }
@@ -341,7 +450,7 @@ const ChatList = () => {
       {/* No need to show error again since we have the conditional return above */}
       
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4" component="h1" sx={{ color: colors.textColor }}>
+        <Typography variant="h4" component="h1" sx={{ color: safeColors.text.primary }}>
           Cursor Chat History
         </Typography>
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
@@ -360,11 +469,11 @@ const ChatList = () => {
             startIcon={<RefreshIcon />}
             onClick={fetchChats}
             sx={{ 
-              color: colors.highlightColor,
-              borderColor: alpha(colors.highlightColor, 0.5),
+              color: safeColors.highlightColor,
+              borderColor: alpha(safeColors.highlightColor, 0.5),
               '&:hover': {
-                borderColor: colors.highlightColor,
-                backgroundColor: alpha(colors.highlightColor, 0.1),
+                borderColor: safeColors.highlightColor,
+                backgroundColor: alpha(safeColors.highlightColor, 0.1),
               }
             }}
           >
@@ -406,7 +515,7 @@ const ChatList = () => {
           >
             Cancel
           </Button>
-          <Button onClick={() => handleExportWarningClose(true)} color="highlight" variant="contained">
+          <Button onClick={() => handleExportWarningClose(true)} color="primary" variant="contained">
             Continue Export
           </Button>
         </DialogActions>
@@ -540,21 +649,21 @@ const ChatList = () => {
               >
                 <Box 
                   sx={{ 
-                    background: colors.background.paper,
+                    background: safeColors.background.paper,
                     borderBottom: '1px solid',
-                    borderColor: alpha(colors.text.secondary, 0.1),
-                    color: colors.text.primary,
+                    borderColor: alpha(safeColors.text.secondary, 0.1),
+                    color: safeColors.text.primary,
                     p: 2,
                     cursor: 'pointer',
                     '&:hover': {
-                      backgroundColor: alpha(colors.highlightColor, 0.02)
+                      backgroundColor: alpha(safeColors.highlightColor, 0.02)
                     }
                   }}
                   onClick={() => toggleProjectExpand(projectName)}
                 >
                   <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                      <FolderIcon sx={{ mr: 1.5, fontSize: 28, color: colors.text.secondary }} />
+                      <FolderIcon sx={{ mr: 1.5, fontSize: 28, color: safeColors.text.secondary }} />
                       <Typography variant="h6" sx={{ fontWeight: 600 }}>
                         {projectData.name}
                       </Typography>
@@ -564,34 +673,59 @@ const ChatList = () => {
                         sx={{ 
                           ml: 2,
                           fontWeight: 500,
-                          backgroundColor: colors.highlightColor,
-                          color: colors.text.primary,
+                          backgroundColor: safeColors.highlightColor,
+                          color: safeColors.text.primary,
                           '& .MuiChip-label': {
                             px: 1.5
                           }
                         }} 
                       />
                     </Box>
-                    <IconButton 
-                      aria-expanded={expandedProjects[projectName]}
-                      aria-label="show more"
-                      sx={{ 
-                        color: colors.text.primary,
-                        bgcolor: colors.highlightColor,
-                        '&:hover': {
-                          bgcolor: alpha(colors.highlightColor, 0.8)
-                        }
-                      }}
-                      onClick={(e) => {
-                        // Prevent the click from reaching the parent Box
-                        e.stopPropagation();
-                        toggleProjectExpand(projectName);
-                      }}
-                    >
-                      {expandedProjects[projectName] ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-                    </IconButton>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Tooltip title="新增对话">
+                        <IconButton 
+                          size="small"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleNewChatFromProject(e, projectData);
+                          }}
+                          disabled={isCreatingNewChat}
+                          sx={{ 
+                            color: safeColors.highlightColor,
+                            bgcolor: alpha(safeColors.highlightColor, 0.1),
+                            '&:hover': {
+                              backgroundColor: alpha(safeColors.highlightColor, 0.2)
+                            },
+                            '&:disabled': {
+                              color: 'text.secondary',
+                              bgcolor: alpha(safeColors.text.secondary, 0.1)
+                            }
+                          }}
+                        >
+                          <AddIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                      <IconButton 
+                        aria-expanded={expandedProjects[projectName]}
+                        aria-label="show more"
+                        sx={{ 
+                          color: safeColors.text.primary,
+                          bgcolor: safeColors.highlightColor,
+                          '&:hover': {
+                            bgcolor: alpha(safeColors.highlightColor, 0.8)
+                          }
+                        }}
+                        onClick={(e) => {
+                          // Prevent the click from reaching the parent Box
+                          e.stopPropagation();
+                          toggleProjectExpand(projectName);
+                        }}
+                      >
+                        {expandedProjects[projectName] ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                      </IconButton>
+                    </Box>
                   </Box>
-                  <Typography variant="body2" sx={{ color: colors.text.secondary, mt: 0.5 }}>
+                  <Typography variant="body2" sx={{ color: safeColors.text.secondary, mt: 0.5 }}>
                     {projectData.path}
                   </Typography>
                 </Box>
@@ -615,10 +749,10 @@ const ChatList = () => {
                     }
 
                     return (
-                      <Grid item xs={12} sm={6} md={4} key={chat.session_id || `chat-${index}`}>
+                      <Grid item xs={12} sm={6} md={4} key={chat?.session_id || `chat-${index}`}>
                         <Card 
                           component={Link} 
-                          to={`/chat/${chat.session_id}`}
+                          to={`/chat/${chat?.session_id || ''}`}
                           sx={{ 
                             height: '100%', 
                             display: 'flex', 
@@ -626,7 +760,7 @@ const ChatList = () => {
                             transition: 'all 0.3s cubic-bezier(.17,.67,.83,.67)',
                             textDecoration: 'none',
                             borderTop: '1px solid',
-                            borderColor: alpha(colors.text.secondary, 0.1),
+                            borderColor: alpha(safeColors.text.secondary, 0.1),
                             '&:hover': {
                               transform: 'translateY(-8px)',
                               boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)',
@@ -651,7 +785,7 @@ const ChatList = () => {
                             <Divider sx={{ my: 1.5 }} />
                             
                             <Box sx={{ display: 'flex', alignItems: 'center', mb: 1.5 }}>
-                              <MessageIcon fontSize="small" sx={{ mr: 1, color: colors.text.secondary }} />
+                              <MessageIcon fontSize="small" sx={{ mr: 1, color: safeColors.text.secondary }} />
                               <Typography variant="body2" fontWeight="500">
                                 {Array.isArray(chat.messages) ? chat.messages.length : 0} messages
                               </Typography>
@@ -669,7 +803,7 @@ const ChatList = () => {
                                   whiteSpace: 'nowrap'
                                 }}
                               >
-                                DB: {chat.db_path.split('/').slice(-2).join('/')}
+                                DB: {chat?.db_path?.split('/').slice(-2).join('/') || 'Unknown'}
                               </Typography>
                             )}
                             
@@ -677,10 +811,10 @@ const ChatList = () => {
                               <Box sx={{ 
                                 mt: 2, 
                                 p: 1.5, 
-                                backgroundColor: alpha(colors.highlightColor, 0.1),
+                                backgroundColor: alpha(safeColors.highlightColor, 0.1),
                                 borderRadius: 2,
                                 border: '1px solid',
-                                borderColor: alpha(colors.text.secondary, 0.05)
+                                borderColor: alpha(safeColors.text.secondary, 0.05)
                               }}>
                                 <Typography 
                                   variant="body2" 
@@ -702,10 +836,28 @@ const ChatList = () => {
                             )}
                           </CardContent>
                           <CardActions sx={{ mt: 'auto', pt: 0 }}>
+                            <Tooltip title="新增对话">
+                              <IconButton 
+                                size="small" 
+                                onClick={(e) => handleNewChat(e, chat)}
+                                disabled={isCreatingNewChat}
+                                sx={{ 
+                                  color: safeColors.highlightColor,
+                                  '&:hover': {
+                                    backgroundColor: alpha(safeColors.highlightColor, 0.1)
+                                  },
+                                  '&:disabled': {
+                                    color: 'text.secondary'
+                                  }
+                                }}
+                              >
+                                <AddIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
                             <Tooltip title="Export as HTML (Warning: Check for sensitive data)">
                               <IconButton 
                                 size="small" 
-                                onClick={(e) => handleExport(e, chat.session_id)}
+                                onClick={(e) => handleExport(e, chat?.session_id || '')}
                                 sx={{ 
                                   ml: 'auto',
                                   position: 'relative',
@@ -739,4 +891,4 @@ const ChatList = () => {
   );
 };
 
-export default ChatList; 
+export default ChatList;
