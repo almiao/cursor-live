@@ -29,7 +29,7 @@ class CursorAutomation:
         s = platform.system()
         if s == "Darwin":   return h / "Library" / "Application Support" / "Cursor"
         if s == "Windows":  return h / "AppData" / "Roaming" / "Cursor"
-        if s == "Linux":    return h / ".config" / "Cursor"
+        if s == "Linux":    return h / ".config" / "CursorA j"
         raise RuntimeError(f"Unsupported OS: {s}")
     
     def j(self, cur: sqlite3.Cursor, table: str, key: str):
@@ -68,17 +68,20 @@ class CursorAutomation:
             logger.error(f"获取workspace ID失败: {e}")
             return None
     
-    def detect_dialog_state(self) -> str:
+    def detect_dialog_state(self, workspace_id: str = None) -> str:
         try:
             logger.info("开始基于数据库的对话框状态检测...")
             
-            # 获取workspace ID
-            workspace_id = self.get_workspace_id()
+            # 如果没有传入workspace_id，则获取最新的
+            if not workspace_id:
+                workspace_id = self.get_workspace_id()
+                logger.info(f"使用默认workspace ID: {workspace_id}")
+            
             if not workspace_id:
                 logger.warning("无法获取workspace ID，使用默认状态")
                 return 'unknown'
             
-            # 获取Cursor根目录
+            # 获取Cursor根目录∫
             base = self.cursor_root()
             workspace_storage = base / "User" / "workspaceStorage"
             workspace_db = workspace_storage / workspace_id / "state.vscdb"
@@ -119,19 +122,20 @@ class CursorAutomation:
             logger.error(f"详细错误信息: {traceback.format_exc()}")
             return 'unknown'
     
-    def wait_for_dialog_state(self, expected_state: str, timeout: int = 10) -> bool:
+    def wait_for_dialog_state(self, expected_state: str, timeout: int = 20, workspace_id: str = None) -> bool:
         """等待特定的对话框状态
         
         Args:
             expected_state: 期望的状态 ('dialogue', 'empty')
             timeout: 超时时间（秒）
+            workspace_id: 目标workspace ID，如果为None则使用最新的
             
         Returns:
             bool: 是否检测到期望状态
         """
         start_time = time.time()
         while time.time() - start_time < timeout:
-            current_state = self.detect_dialog_state()
+            current_state = self.detect_dialog_state(workspace_id)
             if current_state == expected_state:
                 logger.info(f"成功检测到期望状态: {expected_state}")
                 return True
@@ -273,15 +277,16 @@ class CursorAutomation:
             logger.error(f"激活Cursor窗口失败: {e}")
             return False
     
-    def open_chat_dialog(self, skip_activation: bool = False) -> bool:
-        """调出聊天对话框（Command/Ctrl + I）
+    def open_chat_dialog(self, skip_activation: bool = False, workspace_id: str = None) -> bool:
+        """调出聊天对话框（Mac: Option+Command+B, Windows/Linux: Ctrl+I）
         
         Args:
             skip_activation: 是否跳过激活步骤
+            workspace_id: 目标workspace ID，如果为None则使用最新的
         """
         try:
             # 检测当前对话框状态
-            current_state = self.detect_dialog_state()
+            current_state = self.detect_dialog_state(workspace_id)
             if current_state == 'dialogue':
                 logger.info("对话框已经打开，无需重复打开")
                 return True
@@ -294,12 +299,18 @@ class CursorAutomation:
                 logger.info("跳过对话框激活步骤")
                 time.sleep(0.5)  # 短暂等待
             
-            # 发送快捷键：Command/Ctrl + I
-            pyautogui.hotkey(self.modifier, 'i')
-            logger.info("已发送快捷键 Command+I 打开聊天对话框")
+            # 根据系统发送不同的快捷键
+            if self.system == 'Darwin':
+                # Mac: Option+Command+B
+                pyautogui.hotkey('option', 'command', 'b')
+                logger.info("已发送快捷键 Option+Command+B 打开聊天对话框")
+            else:
+                # Windows/Linux: Ctrl+I
+                pyautogui.hotkey(self.modifier, 'i')
+                logger.info("已发送快捷键 Ctrl+I 打开聊天对话框")
             
             # 等待对话框打开并验证
-            if self.wait_for_dialog_state('dialogue', timeout=5):
+            if self.wait_for_dialog_state('dialogue', timeout=5, workspace_id=workspace_id):
                 logger.info("对话框成功打开")
                 return True
             else:
@@ -338,12 +349,13 @@ class CursorAutomation:
             logger.error(f"打开AI侧边栏失败: {e}")
             return False
     
-    def input_text(self, text: str) -> bool:
+    def input_text(self, text: str, workspace_id: str = None) -> bool:
         """
         在Cursor聊天对话框中输入文本
         
         Args:
             text: 要输入的文本
+            workspace_id: 目标workspace ID，如果为None则使用最新的
             
         Returns:
             bool: 输入成功返回True，失败返回False
@@ -352,10 +364,10 @@ class CursorAutomation:
             logger.info(f"开始输入文本: {text[:50]}...")
             
             # 检测对话框状态
-            current_state = self.detect_dialog_state()
+            current_state = self.detect_dialog_state(workspace_id)
             if current_state != 'dialogue':
                 logger.warning(f"当前状态不是对话框状态: {current_state}，尝试重新打开对话框")
-                if not self.open_chat_dialog():
+                if not self.open_chat_dialog(workspace_id=workspace_id):
                     logger.error("无法打开对话框，输入文本失败")
                     return False
             
@@ -436,13 +448,14 @@ class CursorAutomation:
             logger.error(f"提交消息失败: {e}")
             return False
     
-    def send_to_cursor(self, text: str, max_retries: int = 1, skip_activation: bool = False) -> bool:
+    def send_to_cursor(self, text: str, max_retries: int = 1, skip_activation: bool = False, workspace_id: str = None) -> bool:
         """完整的发送流程
         
         Args:
             text: 要发送的文本
             max_retries: 最大重试次数
             skip_activation: 是否跳过激活步骤（当刚切换项目后使用）
+            workspace_id: 目标workspace ID，如果为None则使用最新的
         """
         logger.info("=== 开始消息发送流程 ===")
         logger.info(f"目标消息: {text[:50]}{'...' if len(text) > 50 else ''}")
@@ -468,15 +481,15 @@ class CursorAutomation:
                 
                 # 步骤2: 打开聊天对话框
                 logger.info("步骤2: 打开聊天对话框")
-                pre_dialog_state = self.detect_dialog_state()
+                pre_dialog_state = self.detect_dialog_state(workspace_id)
                 logger.info(f"打开对话框前的状态: {pre_dialog_state}")
                 
                 logger.info("执行操作: 调用open_chat_dialog方法")
-                dialog_result = self.open_chat_dialog(skip_activation=skip_activation)
+                dialog_result = self.open_chat_dialog(skip_activation=skip_activation, workspace_id=workspace_id)
                 logger.info(f"对话框打开结果: {'成功' if dialog_result else '失败'}")
                 
                 if dialog_result:
-                    post_dialog_state = self.detect_dialog_state()
+                    post_dialog_state = self.detect_dialog_state(workspace_id)
                     logger.info(f"打开对话框后的状态: {post_dialog_state}")
                 else:
                     logger.warning("对话框打开失败，跳过此次尝试")
@@ -485,7 +498,7 @@ class CursorAutomation:
                 # 步骤3: 输入文本
                 logger.info("步骤3: 输入文本内容")
                 logger.info(f"执行操作: 输入文本内容 (长度: {len(text)} 字符)")
-                input_result = self.input_text(text)
+                input_result = self.input_text(text, workspace_id=workspace_id)
                 logger.info(f"文本输入结果: {'成功' if input_result else '失败'}")
                 
                 if not input_result:
@@ -504,7 +517,7 @@ class CursorAutomation:
                 
                 # 步骤6: 验证最终状态
                 logger.info("步骤5: 验证发送完成状态")
-                final_state = self.detect_dialog_state()
+                final_state = self.detect_dialog_state(workspace_id)
                 logger.info(f"最终页面状态: {final_state}")
                 
                 logger.info("=== 消息发送成功！===")
@@ -623,15 +636,16 @@ def main():
         print("❌ 发送失败，请检查Cursor是否安装并运行")
 
 # 如果从其他模块调用
-def receive_from_app(text: str, skip_activation: bool = False):
+def receive_from_app(text: str, skip_activation: bool = False, workspace_id: str = None):
     """从你的App调用这个函数
     
     Args:
         text: 要发送的文本
         skip_activation: 是否跳过激活步骤（当刚切换项目后使用）
+        workspace_id: 目标workspace ID，如果为None则使用最新的
     """
     automator = CursorAutomation()
-    return automator.send_to_cursor(text, skip_activation=skip_activation)
+    return automator.send_to_cursor(text, skip_activation=skip_activation, workspace_id=workspace_id)
 
 def switch_cursor_project(root_path: str):
     """切换Cursor到指定项目目录"""

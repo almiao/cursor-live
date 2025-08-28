@@ -222,15 +222,6 @@ class ImprovedCursorFocusDetector:
             'error': None,
             'method': 'accessibility'
         }
-        
-        if not ACCESSIBILITY_AVAILABLE:
-            result['error'] = 'Accessibility API不可用'
-            return result
-        
-        if not self.check_accessibility_permission():
-            result['error'] = 'Accessibility权限不足'
-            return result
-        
         try:
             sys_element = AXUIElementCreateSystemWide()
             error_code, focused_element = AXUIElementCopyAttributeValue(

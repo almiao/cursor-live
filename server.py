@@ -7,6 +7,7 @@ import json
 import uuid
 import logging
 import datetime
+import time
 import os
 import platform
 import sqlite3
@@ -942,6 +943,50 @@ def get_cursor_status():
         logger.error(f"Error in get_cursor_status: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/cursor-status', methods=['GET'])
+def get_cursor_status_simple():
+    """获取Cursor状态的简化版本，用于前端定时检查"""
+    try:
+        # 导入cursor窗口检测器
+        import sys
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        
+        from cursor_window_detector import CursorWindowDetector
+        from pyautogu import CursorAutomation
+        
+        detector = CursorWindowDetector()
+        automation = CursorAutomation()
+        
+        # 获取workspace_id参数
+        workspace_id = request.args.get('workspace_id')
+        
+        # 检查窗口状态（是否为前台应用）
+        is_active = detector.is_cursor_frontmost()
+        
+        # 检查对话框状态
+        dialog_state = automation.detect_dialog_state(workspace_id)
+        is_dialog_open = dialog_state == 'dialogue'
+        
+        return jsonify({
+            "isActive": is_active,
+            "isDialogOpen": is_dialog_open,
+            "dialogState": dialog_state,
+            "timestamp": time.time()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in get_cursor_status_simple: {e}", exc_info=True)
+        return jsonify({
+            "isActive": False,
+            "isDialogOpen": False,
+            "dialogState": "unknown",
+            "error": str(e),
+            "timestamp": time.time()
+        }), 500
+
 @app.route('/api/cursor/focus', methods=['GET', 'POST'])
 def get_cursor_focus():
     """获取Cursor应用的焦点状态"""
@@ -1323,7 +1368,7 @@ def send_to_cursor():
         
         # 调用pyautogui发送消息到Cursor
         # 如果刚切换了项目，跳过激活步骤避免重复操作
-        success = receive_from_app(message, skip_activation=project_switched)
+        success = receive_from_app(message, skip_activation=project_switched, workspace_id=workspace_id)
         
         if success:
             logger.info("Message successfully sent to Cursor")
@@ -1527,4 +1572,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     logger.info(f"Starting server on port {args.port}")
-    app.run(host='127.0.0.1', port=args.port, debug=args.debug)
+    app.run(host='0.0.0.0', port=args.port, debug=args.debug)

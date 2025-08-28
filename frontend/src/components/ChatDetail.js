@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
@@ -7,13 +7,11 @@ import {
   Typography,
   Box,
   Paper,
-  Divider,
   CircularProgress,
   Chip,
   Button,
   Avatar,
   alpha,
-  Stack,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -24,7 +22,6 @@ import {
   Radio,
   RadioGroup,
   FormControl,
-  FormLabel,
   TextField,
   IconButton,
 } from '@mui/material';
@@ -39,6 +36,7 @@ import DataObjectIcon from '@mui/icons-material/DataObject';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import WarningIcon from '@mui/icons-material/Warning';
 import SendIcon from '@mui/icons-material/Send';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import { colors } from '../App';
 
 const ChatDetail = () => {
@@ -53,20 +51,141 @@ const ChatDetail = () => {
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef(null);
+  
+  // 定时刷新相关状态
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshInterval, setRefreshInterval] = useState(30000); // 默认30秒
+  const [lastChatHash, setLastChatHash] = useState(null);
+  const [lastChangeTime, setLastChangeTime] = useState(null);
+  const refreshTimerRef = useRef(null);
+  
+  // Cursor状态相关
+  const [cursorStatus, setCursorStatus] = useState({
+    isActive: false,
+    isDialogOpen: false,
+    lastCheck: null
+  });
+  const [statusCheckInterval, setStatusCheckInterval] = useState(5000); // 5秒检查一次状态
+  const statusTimerRef = useRef(null);
 
-  useEffect(() => {
-    const fetchChat = async () => {
-      try {
-        const response = await axios.get(`/api/chat/${sessionId}`);
-        setChat(response.data);
-        setLoading(false);
-      } catch (err) {
-        setError(err.message);
-        setLoading(false);
+  // 计算聊天内容的哈希值，用于检测变化
+  const calculateChatHash = (chatData) => {
+    if (!chatData || !chatData.messages) return null;
+    const messagesStr = JSON.stringify(chatData.messages);
+    // 使用UTF-8编码处理Unicode字符
+    const encoder = new TextEncoder();
+    const data = encoder.encode(messagesStr);
+    // 简单的哈希计算
+    let hash = 0;
+    for (let i = 0; i < data.length; i++) {
+      hash = ((hash << 5) - hash + data[i]) & 0xffffffff;
+    }
+    return hash.toString(16);
+  };
+
+  // 获取聊天数据
+  const fetchChat = useCallback(async () => {
+    try {
+      const response = await axios.get(`/api/chat/${sessionId}`);
+      const newChat = response.data;
+      const newHash = calculateChatHash(newChat);
+      
+      // 检查内容是否发生变化
+      if (newHash !== lastChatHash) {
+        setChat(newChat);
+        setLastChatHash(newHash);
+        setLastChangeTime(Date.now());
       }
-    };
+      
+      setLoading(false);
+    } catch (err) {
+      setError(err.message);
+      setLoading(false);
+    }
+  }, [sessionId, lastChatHash]);
 
+  // 启动定时刷新
+  const startRefreshTimer = useCallback(() => {
+    if (refreshTimerRef.current) {
+      clearInterval(refreshTimerRef.current);
+    }
+    
+    refreshTimerRef.current = setInterval(() => {
+      if (!sending) { // 发送消息时不刷新
+        setIsRefreshing(true);
+        fetchChat().finally(() => {
+          setIsRefreshing(false);
+        });
+      }
+    }, refreshInterval);
+  }, [refreshInterval, sending, fetchChat]);
+
+  // 停止定时刷新
+  const stopRefreshTimer = () => {
+    if (refreshTimerRef.current) {
+      clearInterval(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+  };
+
+  // 手动刷新
+  const handleManualRefresh = async () => {
+    setIsRefreshing(true);
+    await fetchChat();
+    setIsRefreshing(false);
+  };
+
+  // 检查Cursor状态
+  const checkCursorStatus = useCallback(async () => {
+    try {
+      const workspace_id = chat?.workspace_id;
+      const response = await axios.get('/api/cursor-status', {
+        params: { workspace_id }
+      });
+      const status = response.data;
+      setCursorStatus({
+        isActive: status.isActive,
+        isDialogOpen: status.isDialogOpen,
+        lastCheck: Date.now()
+      });
+    } catch (err) {
+      console.error('检查Cursor状态失败:', err);
+      setCursorStatus(prev => ({
+        ...prev,
+        isActive: false,
+        isDialogOpen: false,
+        lastCheck: Date.now()
+      }));
+    }
+  }, [chat?.workspace_id]);
+
+  // 启动状态检查定时器
+  const startStatusTimer = useCallback(() => {
+    if (statusTimerRef.current) {
+      clearInterval(statusTimerRef.current);
+    }
+    
+    statusTimerRef.current = setInterval(() => {
+      checkCursorStatus();
+    }, statusCheckInterval);
+  }, [statusCheckInterval, checkCursorStatus]);
+
+  // 停止状态检查定时器
+  const stopStatusTimer = () => {
+    if (statusTimerRef.current) {
+      clearInterval(statusTimerRef.current);
+      statusTimerRef.current = null;
+    }
+  };
+
+  // 初始化数据获取和定时刷新
+  useEffect(() => {
     fetchChat();
+    startRefreshTimer();
+    startStatusTimer();
+    
+    // 立即检查一次Cursor状态
+    checkCursorStatus();
     
     // Check if user has previously chosen to not show the export warning
     const warningPreference = document.cookie
@@ -76,7 +195,41 @@ const ChatDetail = () => {
     if (warningPreference) {
       setDontShowExportWarning(warningPreference.split('=')[1] === 'true');
     }
-  }, [sessionId]);
+
+    // 清理函数
+    return () => {
+      stopRefreshTimer();
+      stopStatusTimer();
+    };
+  }, [sessionId, fetchChat, startRefreshTimer, startStatusTimer, checkCursorStatus]);
+
+  // 当刷新间隔改变时，重启定时器
+  useEffect(() => {
+    if (refreshInterval) {
+      stopRefreshTimer();
+      startRefreshTimer();
+    }
+  }, [refreshInterval, sessionId, startRefreshTimer]);
+
+  // 监听lastChangeTime变化，设置10秒后降低刷新频率的定时器
+  useEffect(() => {
+    if (lastChangeTime && refreshInterval < 30000) {
+      const timer = setTimeout(() => {
+        setRefreshInterval(30000); // 10秒后恢复到30秒刷新
+        setStatusCheckInterval(5000); // 同时恢复状态检查频率到5秒
+      }, 10000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [lastChangeTime, refreshInterval]);
+
+  // 当状态检查间隔改变时，重启状态检查定时器
+  useEffect(() => {
+    if (statusCheckInterval) {
+      stopStatusTimer();
+      startStatusTimer();
+    }
+  }, [statusCheckInterval, startStatusTimer]);
 
   // 自动滚动到对话底部
   useEffect(() => {
@@ -186,7 +339,12 @@ const ChatDetail = () => {
       
       await axios.post('/api/send-to-cursor', payload);
       setInputText('');
-      alert('消息已发送到Cursor！');
+      
+      // 发送完成后，提高刷新频率到5秒
+      setRefreshInterval(5000);
+      // 同时提高状态检查频率到2秒
+      setStatusCheckInterval(2000);
+      
     } catch (err) {
       console.error('发送失败:', err);
       alert('发送失败，请检查后端服务是否正常运行');
@@ -336,36 +494,63 @@ const ChatDetail = () => {
           Back to all chats
         </Button>
         
-        <Button
-          onClick={handleExport}
-          startIcon={<FileDownloadIcon />}
-          variant="contained"
-          color="highlight"
-          sx={{ 
-            borderRadius: 2,
-            position: 'relative',
-            '&:hover': {
-              backgroundColor: alpha(colors.highlightColor, 0.8),
-            },
-            '&::after': dontShowExportWarning ? null : {
-              content: '""',
-              position: 'absolute',
-              borderRadius: '50%',
-              top: '4px',
-              right: '4px',
-              width: '8px', // Adjusted size for button
-              height: '8px' // Adjusted size for button
-            },
-            // Conditionally add the background color if the warning should be shown
-            ...( !dontShowExportWarning && {
-              '&::after': { 
-                backgroundColor: 'warning.main'
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+          {/* 刷新状态指示器 */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {isRefreshing && (
+              <CircularProgress size={16} sx={{ color: colors.highlightColor }} />
+            )}
+            <Typography variant="caption" color="text.secondary">
+              {refreshInterval < 30000 ? '高频刷新中' : '自动刷新'}
+            </Typography>
+          </Box>
+          
+          {/* 手动刷新按钮 */}
+          <IconButton
+            onClick={handleManualRefresh}
+            disabled={isRefreshing}
+            size="small"
+            sx={{
+              color: colors.highlightColor,
+              '&:hover': {
+                backgroundColor: alpha(colors.highlightColor, 0.1),
               }
-            })
-          }}
-        >
-          Export
-        </Button>
+            }}
+          >
+            <RefreshIcon />
+          </IconButton>
+          
+          <Button
+            onClick={handleExport}
+            startIcon={<FileDownloadIcon />}
+            variant="contained"
+            color="highlight"
+            sx={{ 
+              borderRadius: 2,
+              position: 'relative',
+              '&:hover': {
+                backgroundColor: alpha(colors.highlightColor, 0.8),
+              },
+              '&::after': dontShowExportWarning ? null : {
+                content: '""',
+                position: 'absolute',
+                borderRadius: '50%',
+                top: '4px',
+                right: '4px',
+                width: '8px', // Adjusted size for button
+                height: '8px' // Adjusted size for button
+              },
+              // Conditionally add the background color if the warning should be shown
+              ...( !dontShowExportWarning && {
+                '&::after': { 
+                  backgroundColor: 'warning.main'
+                }
+              })
+            }}
+          >
+            Export
+          </Button>
+        </Box>
       </Box>
 
       <Paper 
@@ -412,6 +597,33 @@ const ChatDetail = () => {
               <AccountTreeIcon sx={{ mr: 0.5, color: colors.highlightColor, opacity: 0.8, fontSize: 18 }} />
               <Typography variant="body2" color="text.secondary">
                 <strong>Path:</strong> {chat.project?.rootPath || 'Unknown location'}
+              </Typography>
+            </Box>
+            
+            {/* Cursor状态指示器 */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Box sx={{ 
+                width: 8, 
+                height: 8, 
+                borderRadius: '50%', 
+                backgroundColor: cursorStatus.isActive ? 'success.main' : 'error.main',
+                mr: 0.5 
+              }} />
+              <Typography variant="body2" color="text.secondary">
+                <strong>Cursor:</strong> {cursorStatus.isActive ? '已激活' : '未激活'}
+              </Typography>
+            </Box>
+            
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Box sx={{ 
+                width: 8, 
+                height: 8, 
+                borderRadius: '50%', 
+                backgroundColor: cursorStatus.isDialogOpen ? 'success.main' : 'warning.main',
+                mr: 0.5 
+              }} />
+              <Typography variant="body2" color="text.secondary">
+                <strong>AI对话框:</strong> {cursorStatus.isDialogOpen ? '已打开' : '未打开'}
               </Typography>
             </Box>
             
