@@ -5,11 +5,42 @@ import subprocess
 import platform
 import logging
 import os
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+try:
+    import AppKit
+
+    NSWorkspace = AppKit.NSWorkspace  # type: ignore
+
+    import ApplicationServices
+
+    AXUIElementCreateApplication = getattr(ApplicationServices, 'AXUIElementCreateApplication', None)
+    kAXWindowsAttribute = getattr(ApplicationServices, 'kAXWindowsAttribute', "AXWindows")
+    kAXTitleAttribute = getattr(ApplicationServices, 'kAXTitleAttribute', "AXTitle")
+    kAXRoleAttribute = getattr(ApplicationServices, 'kAXRoleAttribute', "AXRole")
+    kAXSubroleAttribute = getattr(ApplicationServices, 'kAXSubroleAttribute', "AXSubrole")
+    kAXChildrenAttribute = getattr(ApplicationServices, 'kAXChildrenAttribute', "AXChildren")
+    kAXValueAttribute = getattr(ApplicationServices, 'kAXValueAttribute', "AXValue")
+    AXUIElementCopyAttributeValue = getattr(ApplicationServices, 'AXUIElementCopyAttributeValue', None)
+    kAXErrorSuccess = getattr(ApplicationServices, 'kAXErrorSuccess', 0)
+    AXIsProcessTrusted = getattr(ApplicationServices, 'AXIsProcessTrusted', None)
+
+    MAC_OS_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"macOS框架不可用: {e}")
+    MAC_OS_AVAILABLE = False
+    # 使用占位符函数
+    NSWorkspace = type('NSWorkspace', (), {'sharedWorkspace': lambda: None})  # type: ignore
+    AXUIElementCreateApplication = lambda x: None  # type: ignore
+    AXUIElementCopyAttributeValue = lambda x, y, z: (1, None)  # type: ignore
+    AXIsProcessTrusted = lambda: False  # type: ignore
+
+# 向后兼容
+MACOS_AVAILABLE = MAC_OS_AVAILABLE
 
 class CursorAutomation:
     def __init__(self):
@@ -21,6 +52,67 @@ class CursorAutomation:
         
         # 设置pyautogui的置信度
         pyautogui.FAILSAFE = True
+
+    def is_cursor_frontmost(self) -> Dict[str, Any]:
+        """
+        检查Cursor是否为前台应用
+
+        Returns:
+            Dict[str, Any]: 检查结果
+        """
+        if not MACOS_AVAILABLE:
+            return {
+                'is_front': False,
+                'error': 'macOS frameworks not available',
+                'status': 'error'
+            }
+
+        try:
+            logger.info("检查Cursor是否为前台应用...")
+
+            ws = NSWorkspace.sharedWorkspace()  # type: ignore
+            if not ws:
+                logger.error("无法获取NSWorkspace实例")
+                return {
+                    'is_front': False,
+                    'error': 'Cannot get NSWorkspace instance',
+                    'status': 'error'
+                }
+
+            frontmost_app = ws.frontmostApplication()  # type: ignore
+
+            if frontmost_app:
+                app_name = frontmost_app.localizedName()
+                bundle_id = frontmost_app.bundleIdentifier()
+
+                logger.info(f"前台应用: {app_name} (Bundle ID: {bundle_id})")
+
+                is_cursor_front = (
+                        (app_name and "Cursor" in app_name) or
+                        (bundle_id and "cursor" in bundle_id.lower())
+                )
+
+                return {
+                    'is_front': is_cursor_front,
+                    'front_app': app_name,
+                    'bundle_id': bundle_id,
+                    'status': 'success'
+                }
+            else:
+                logger.warning("无法获取前台应用信息")
+                return {
+                    'is_front': False,
+                    'error': 'Cannot get frontmost application',
+                    'status': 'error'
+                }
+
+        except Exception as e:
+            logger.error(f"检查前台应用时发生异常: {e}")
+            return {
+                'is_front': False,
+                'error': str(e),
+                'status': 'error'
+            }
         
     def detect_dialog_state(self, workspace_id: str = None) -> str:
         """检测当前对话框状态（基于workbench.auxiliaryBar.hidden）
@@ -697,5 +789,3 @@ def switch_cursor_project(root_path: str):
     automator = CursorAutomation()
     return automator.switch_cursor_project(root_path)
 
-if __name__ == "__main__":
-    main()

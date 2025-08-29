@@ -959,13 +959,12 @@ def get_cursor_status():
         current_dir = os.path.dirname(os.path.abspath(__file__))
         if current_dir not in sys.path:
             sys.path.insert(0, current_dir)
-        
-        from cursor_window_detector import CursorWindowDetector
-        
-        detector = CursorWindowDetector()
-        
+
+        from pyautogu import CursorAutomation
+        automation = CursorAutomation()
+
         # 检查窗口状态（是否为前台应用）
-        window_status = detector.is_cursor_frontmost()
+        window_status = automation.is_cursor_frontmost()
         
         # 检查对话框状态 - 使用workbench.auxiliaryBar.hidden检查
         dialog_status = {
@@ -1050,18 +1049,16 @@ def get_cursor_status_simple():
         current_dir = os.path.dirname(os.path.abspath(__file__))
         if current_dir not in sys.path:
             sys.path.insert(0, current_dir)
-        
-        from cursor_window_detector import CursorWindowDetector
+
         from pyautogu import CursorAutomation
-        
-        detector = CursorWindowDetector()
+
         automation = CursorAutomation()
         
         # 获取workspace_id参数
         workspace_id = request.args.get('workspace_id')
         
         # 检查窗口状态（是否为前台应用）
-        is_active = detector.is_cursor_frontmost()
+        is_active = automation.is_cursor_frontmost()
         
         # 检查对话框状态
         dialog_state = automation.detect_dialog_state(workspace_id)
