@@ -621,15 +621,20 @@ def extract_chats() -> list[Dict[str,Any]]:
     logger.debug(f"Total chat sessions extracted: {len(out)}")
     return out
 
-def get_latest_session_id(workspace_id: str) -> Optional[str]:
+def get_latest_session_id(workspace_id: str) -> Optional[Dict[str, Any]]:
     """
-    根据 workspace_id 返回该工作区的最新 session_id (composerId)
+    根据 workspace_id 返回该工作区的最新 session_id 和对话内容
     
     Args:
         workspace_id: 工作区ID
         
     Returns:
-        最新的 session_id，如果没有找到则返回 None
+        包含最新 session_id 和对话内容的字典，如果没有找到则返回 None
+        格式: {
+            "session_id": "composer_id",
+            "messages": [{"role": "user/assistant", "content": "消息内容"}, ...],
+            "message_count": 消息数量
+        }
     """
     if not workspace_id or workspace_id in ["unknown", "(unknown)", "(global)"]:
         logger.debug(f"Invalid workspace ID: {workspace_id}")
@@ -638,68 +643,167 @@ def get_latest_session_id(workspace_id: str) -> Optional[str]:
     root = cursor_root()
     logger.debug(f"Looking for latest session in workspace: {workspace_id}")
     
-    # 查找指定工作区的数据库
+    # 使用与 extract_chats 相同的逻辑来构建映射
+    comp2ws: Dict[str, str] = {}
+    comp_meta: Dict[str, Dict[str, Any]] = {}
+    sessions: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"messages": [], "last_updated": 0})
+    
+    # 1. 处理工作区数据库
     workspace_db = None
     for ws_id, db in workspaces(root):
         if ws_id == workspace_id:
             workspace_db = db
             break
     
-    if not workspace_db:
-        logger.debug(f"Workspace DB not found for ID: {workspace_id}")
-        return None
+    if workspace_db:
+        logger.debug(f"Processing workspace DB: {workspace_db}")
+        # 获取工作区信息
+        proj, meta = workspace_info(workspace_db)
+        for cid, m in meta.items():
+            comp_meta[cid] = m
+            comp2ws[cid] = ws_id
+
+        # 从工作区数据库提取聊天数据
+        msg_count = 0
+        for cid, role, text, db_path in iter_chat_from_item_table(workspace_db):
+            sessions[cid]["messages"].append({"role": role, "content": text})
+            if cid not in comp_meta:
+                comp_meta[cid] = {"title": f"Chat {cid[:8]}", "createdAt": None, "lastUpdatedAt": None}
+            if cid not in comp2ws:
+                comp2ws[cid] = ws_id
+            msg_count += 1
+        logger.debug(f"  - Extracted {msg_count} messages from workspace {workspace_id}")
     
-    # 存储该工作区的所有会话信息
-    sessions: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"messages": [], "last_updated": 0})
-    
-    # 从工作区数据库提取聊天数据
-    for cid, role, text, db_path in iter_chat_from_item_table(workspace_db):
-        sessions[cid]["messages"].append({"role": role, "content": text})
-        # 更新最后更新时间（使用消息数量作为简单的时间戳）
-        sessions[cid]["last_updated"] = len(sessions[cid]["messages"])
-    
-    # 从全局存储中提取属于该工作区的数据
+    # 2. 处理全局存储
     global_db = global_storage_path(root)
     if global_db:
+        logger.debug(f"Processing global storage: {global_db}")
+        
+        # 提取 bubbles from cursorDiskKV
+        msg_count = 0
+        for cid, role, text, db_path in iter_bubbles_from_disk_kv(global_db):
+            sessions[cid]["messages"].append({"role": role, "content": text})
+            msg_count += 1
+            if cid not in comp_meta:
+                comp_meta[cid] = {"title": f"Chat {cid[:8]}", "createdAt": None, "lastUpdatedAt": None}
+            if cid not in comp2ws:
+                comp2ws[cid] = "(global)"
+        logger.debug(f"  - Extracted {msg_count} messages from global cursorDiskKV bubbles")
+
         # 提取 composer 数据
+        comp_count = 0
         for cid, data, db_path in iter_composer_data(global_db):
-            # 检查这个 composer 是否属于指定工作区
-            # 这里我们假设如果 composer 在工作区数据库中没有找到，但在全局存储中找到，
-            # 且工作区ID匹配，则属于该工作区
-            if cid not in sessions:
-                # 检查数据中是否有工作区信息
-                workspace_info = data.get("workspaceId") or data.get("workspace_id")
-                if workspace_info == workspace_id:
-                    sessions[cid]["messages"] = []
-                    # 提取对话数据
-                    conversation = data.get("conversation", [])
-                    if conversation:
-                        for msg in conversation:
-                            msg_type = msg.get("type")
-                            if msg_type is not None:
-                                role = "user" if msg_type == 1 else "assistant"
-                                content = msg.get("text", "")
-                                if content and isinstance(content, str):
-                                    sessions[cid]["messages"].append({"role": role, "content": content})
+            if cid not in comp_meta:
+                created_at = data.get("createdAt")
+                comp_meta[cid] = {
+                    "title": f"Chat {cid[:8]}",
+                    "createdAt": created_at,
+                    "lastUpdatedAt": created_at
+                }
+            if cid not in comp2ws:
+                comp2ws[cid] = "(global)"
+            
+            # 提取对话数据
+            conversation = data.get("conversation", [])
+            if conversation:
+                msg_count = 0
+                for msg in conversation:
+                    msg_type = msg.get("type")
+                    if msg_type is not None:
+                        role = "user" if msg_type == 1 else "assistant"
+                        content = msg.get("text", "")
+                        if content and isinstance(content, str):
+                            sessions[cid]["messages"].append({"role": role, "content": content})
+                            msg_count += 1
+                
+                if msg_count > 0:
+                    comp_count += 1
+                    logger.debug(f"  - Added {msg_count} messages from composer {cid[:8]}")
+        
+        if comp_count > 0:
+            logger.debug(f"  - Extracted data from {comp_count} composers in global cursorDiskKV")
+        
+        # 处理全局 ItemTable
+        try:
+            con = sqlite3.connect(f"file:{global_db}?mode=ro", uri=True)
+            chat_data = j(con.cursor(), "ItemTable", "workbench.panel.aichat.view.aichat.chatdata")
+            if chat_data:
+                msg_count = 0
+                for tab in chat_data.get("tabs", []):
+                    tab_id = tab.get("tabId")
+                    if tab_id and tab_id not in comp_meta:
+                        comp_meta[tab_id] = {
+                            "title": f"Global Chat {tab_id[:8]}",
+                            "createdAt": None,
+                            "lastUpdatedAt": None
+                        }
+                    if tab_id and tab_id not in comp2ws:
+                        comp2ws[tab_id] = "(global)"
                     
-                    # 更新最后更新时间
-                    sessions[cid]["last_updated"] = len(sessions[cid]["messages"])
+                    for bubble in tab.get("bubbles", []):
+                        content = ""
+                        if "text" in bubble:
+                            content = bubble["text"]
+                        elif "content" in bubble:
+                            content = bubble["content"]
+                        
+                        if content and isinstance(content, str):
+                            role = "user" if bubble.get("type") == "user" else "assistant"
+                            sessions[tab_id]["messages"].append({"role": role, "content": content})
+                            msg_count += 1
+                logger.debug(f"  - Extracted {msg_count} messages from global chat data")
+            con.close()
+        except Exception as e:
+            logger.debug(f"Error processing global ItemTable: {e}")
     
-    # 找到最新的会话
-    latest_session_id = None
-    max_messages = 0
-    
+    # 3. 筛选属于指定工作区的会话
+    workspace_sessions = {}
     for cid, data in sessions.items():
-        if data["messages"] and len(data["messages"]) > max_messages:
-            max_messages = len(data["messages"])
-            latest_session_id = cid
+        if comp2ws.get(cid) == workspace_id and data["messages"]:
+            workspace_sessions[cid] = data
     
+    logger.debug(f"Found {len(workspace_sessions)} sessions for workspace {workspace_id}")
+    
+    # 4. 找到最新的会话（按照最后更新时间排序）
+    latest_session_id = None
+    latest_messages = []
+    latest_update_time = 0
+    message_count = 0
+
+    for cid, data in workspace_sessions.items():
+        # 获取最后更新时间
+        meta = comp_meta.get(cid, {})
+        last_updated = meta.get("lastUpdatedAt") or meta.get("createdAt") or 0
+
+        # 如果时间戳是字符串，尝试转换为数字
+        if isinstance(last_updated, str):
+            try:
+                last_updated = float(last_updated)
+            except ValueError:
+                last_updated = 0
+
+        # 如果时间戳为0，使用消息数量作为备用排序
+        if last_updated == 0:
+            last_updated = len(data["messages"])
+
+        # 比较时间戳，找到最新的
+        if last_updated > latest_update_time:
+            latest_update_time = last_updated
+            latest_session_id = cid
+            latest_messages = data["messages"]
+            message_count = len(data["messages"])
+
     if latest_session_id:
-        logger.debug(f"Found latest session {latest_session_id} with {max_messages} messages in workspace {workspace_id}")
+        logger.debug(f"Found latest session {latest_session_id} with {message_count} messages (updated: {latest_update_time}) in workspace {workspace_id}")
+        return {
+            "session_id": latest_session_id,
+            "messages": latest_messages,
+            "message_count": message_count,
+            "last_updated": latest_update_time
+        }
     else:
         logger.debug(f"No sessions found in workspace {workspace_id}")
-    
-    return latest_session_id
+        return None
 
 def extract_project_from_git_repos(workspace_id, debug=False):
     """
