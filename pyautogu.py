@@ -269,19 +269,14 @@ class CursorAutomation:
             logger.error(f"激活Cursor窗口失败: {e}")
             return False
     
-    def open_chat_dialog(self, skip_activation: bool = False) -> bool:
-        """调出聊天对话框（Command/Ctrl + I）
+    def open_chat_dialog(self, skip_activation: bool = False, new_chat: bool = False) -> bool:
+        """调出聊天对话框或新对话
         
         Args:
             skip_activation: 是否跳过激活步骤
+            new_chat: 是否在已打开的对话框中创建新对话（True使用Command+T，False使用Command+I）
         """
         try:
-            # 检测当前对话框状态
-            current_state = self.detect_dialog_state()
-            if current_state == 'dialogue':
-                logger.info("对话框已经打开，无需重复打开")
-                return True
-            
             # 确保Cursor是活动窗口（如果不跳过激活）
             if not skip_activation:
                 self.activate_cursor()
@@ -290,16 +285,36 @@ class CursorAutomation:
                 logger.info("跳过对话框激活步骤")
                 time.sleep(0.5)  # 短暂等待
             
-            # 发送快捷键：Command/Ctrl + I
-            pyautogui.hotkey(self.modifier, 'i')
-            logger.info("已发送快捷键 Command+I 打开聊天对话框")
+            if new_chat:
+                # 如果要创建新对话，先检查对话框是否已打开
+                current_state = self.detect_dialog_state()
+                if current_state != 'dialogue':
+                    logger.warning("对话框未打开，无法创建新对话，先打开对话框")
+                    # 先打开对话框
+                    pyautogui.hotkey(self.modifier, 'i')
+                    logger.info("已发送快捷键 Command+I 打开聊天对话框")
+                    time.sleep(2)  # 等待对话框打开
+                
+                # 发送快捷键：Command/Ctrl + T（在对话框中创建新对话）
+                pyautogui.hotkey(self.modifier, 't')
+                logger.info("已发送快捷键 Command+T 在对话框中创建新对话")
+            else:
+                # 检测当前对话框状态
+                current_state = self.detect_dialog_state()
+                if current_state == 'dialogue':
+                    logger.info("对话框已经打开，无需重复打开")
+                    return True
+                
+                # 发送快捷键：Command/Ctrl + I（打开聊天对话框）
+                pyautogui.hotkey(self.modifier, 'i')
+                logger.info("已发送快捷键 Command+I 打开聊天对话框")
             
             # 等待对话框打开并验证
             if self.wait_for_dialog_state('dialogue', timeout=5):
-                logger.info("对话框成功打开")
+                logger.info("对话框操作成功")
                 return True
             else:
-                logger.warning("对话框可能未成功打开")
+                logger.warning("对话框操作可能未成功")
                 return False
             
         except Exception as e:
@@ -351,7 +366,7 @@ class CursorAutomation:
             current_state = self.detect_dialog_state()
             if current_state != 'dialogue':
                 logger.warning(f"当前状态不是对话框状态: {current_state}，尝试重新打开对话框")
-                if not self.open_chat_dialog():
+                if not self.open_chat_dialog(new_chat=False):
                     logger.error("无法打开对话框，输入文本失败")
                     return False
             
@@ -432,13 +447,14 @@ class CursorAutomation:
             logger.error(f"提交消息失败: {e}")
             return False
     
-    def send_to_cursor(self, text: str, max_retries: int = 3, skip_activation: bool = False) -> bool:
+    def send_to_cursor(self, text: str, max_retries: int = 3, skip_activation: bool = False, new_chat: bool = False) -> bool:
         """完整的发送流程
         
         Args:
             text: 要发送的文本
             max_retries: 最大重试次数
             skip_activation: 是否跳过激活步骤（当刚切换项目后使用）
+            new_chat: 是否打开新对话（True使用Command+T，False使用Command+I）
         """
         logger.info("=== 开始消息发送流程 ===")
         logger.info(f"目标消息: {text[:50]}{'...' if len(text) > 50 else ''}")
@@ -474,15 +490,8 @@ class CursorAutomation:
                 logger.info(f"打开对话框前的状态: {pre_dialog_state}")
                 
                 logger.info("执行操作: 调用open_chat_dialog方法")
-                dialog_result = self.open_chat_dialog(skip_activation=skip_activation)
+                dialog_result = self.open_chat_dialog(skip_activation=skip_activation, new_chat=new_chat)
                 logger.info(f"对话框打开结果: {'成功' if dialog_result else '失败'}")
-                
-                if dialog_result:
-                    post_dialog_state = self.detect_dialog_state()
-                    logger.info(f"打开对话框后的状态: {post_dialog_state}")
-                else:
-                    logger.warning("对话框打开失败，跳过此次尝试")
-                    continue
                 
                 # 步骤4: 输入文本
                 logger.info("步骤4: 输入文本内容")
@@ -611,22 +620,6 @@ class CursorAutomation:
             logger.error(f"异常详情: {traceback.format_exc()}")
             return False
 
-# 使用示例
-def main():
-    # 创建自动化实例
-    automator = CursorAutomation()
-    
-    # 示例文本（可以从你的App接口获取）
-    sample_text = "请帮我分析这段代码的优化方案：\n\nfunction calculate(data) {\n  let result = 0;\n  for (let i = 0; i < data.length; i++) {\n    result += data[i];\n  }\n  return result;\n}"
-    
-    # 发送到Cursor
-    success = automator.send_to_cursor(sample_text)
-    
-    if success:
-        print("✅ 消息成功发送到Cursor！")
-    else:
-        print("❌ 发送失败，请检查Cursor是否安装并运行")
-
 # 如果从其他模块调用
 def receive_from_app(text: str, skip_activation: bool = False, workspace_id: str = None, force_restart: bool = False, create_new_chat: bool = False):
     """从你的App调用这个函数
@@ -648,7 +641,7 @@ def receive_from_app(text: str, skip_activation: bool = False, workspace_id: str
         creation_time = time.time()
         
         # 执行重启和打开对话框的操作
-        result = automator.send_to_cursor("", skip_activation=skip_activation)
+        result = automator.send_to_cursor("", skip_activation=skip_activation, new_chat=True)
         if result:
             logger.info("新对话准备完成，开始查找最新对话ID")
             
@@ -703,15 +696,6 @@ def switch_cursor_project(root_path: str):
     """切换Cursor到指定项目目录"""
     automator = CursorAutomation()
     return automator.switch_cursor_project(root_path)
-
-def open_ai_sidebar(skip_activation: bool = False):
-    """打开AI侧边栏
-    
-    Args:
-        skip_activation: 是否跳过激活步骤
-    """
-    automator = CursorAutomation()
-    return automator.open_ai_sidebar(skip_activation=skip_activation)
 
 if __name__ == "__main__":
     main()

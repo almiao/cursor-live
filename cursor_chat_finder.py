@@ -9,6 +9,7 @@ import platform
 import datetime
 from typing import List, Dict, Any, Optional
 
+import server
 from extract_cursor_chat import load_chat_session
 
 def get_cursor_storage_path() -> pathlib.Path:
@@ -159,7 +160,7 @@ def create_sample_chats() -> List[Dict[str, Any]]:
 
 def save_all_chats(output_path: pathlib.Path):
     """Save all extracted chats to a JSON file."""
-    chats = extract_all_chats()
+    chats = server.extract_chats()
     output_path.write_text(json.dumps(chats, ensure_ascii=False, indent=2))
     return chats
 

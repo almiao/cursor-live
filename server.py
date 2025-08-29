@@ -14,7 +14,7 @@ import sqlite3
 import argparse
 import pathlib
 from collections import defaultdict
-from typing import Dict, Any, Iterable
+from typing import Dict, Any, Iterable, Optional
 from pathlib import Path
 from flask import Flask, Response, jsonify, send_from_directory, request
 from flask_cors import CORS
@@ -620,6 +620,86 @@ def extract_chats() -> list[Dict[str,Any]]:
     out.sort(key=lambda s: s["session"].get("lastUpdatedAt") or 0, reverse=True)
     logger.debug(f"Total chat sessions extracted: {len(out)}")
     return out
+
+def get_latest_session_id(workspace_id: str) -> Optional[str]:
+    """
+    根据 workspace_id 返回该工作区的最新 session_id (composerId)
+    
+    Args:
+        workspace_id: 工作区ID
+        
+    Returns:
+        最新的 session_id，如果没有找到则返回 None
+    """
+    if not workspace_id or workspace_id in ["unknown", "(unknown)", "(global)"]:
+        logger.debug(f"Invalid workspace ID: {workspace_id}")
+        return None
+    
+    root = cursor_root()
+    logger.debug(f"Looking for latest session in workspace: {workspace_id}")
+    
+    # 查找指定工作区的数据库
+    workspace_db = None
+    for ws_id, db in workspaces(root):
+        if ws_id == workspace_id:
+            workspace_db = db
+            break
+    
+    if not workspace_db:
+        logger.debug(f"Workspace DB not found for ID: {workspace_id}")
+        return None
+    
+    # 存储该工作区的所有会话信息
+    sessions: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"messages": [], "last_updated": 0})
+    
+    # 从工作区数据库提取聊天数据
+    for cid, role, text, db_path in iter_chat_from_item_table(workspace_db):
+        sessions[cid]["messages"].append({"role": role, "content": text})
+        # 更新最后更新时间（使用消息数量作为简单的时间戳）
+        sessions[cid]["last_updated"] = len(sessions[cid]["messages"])
+    
+    # 从全局存储中提取属于该工作区的数据
+    global_db = global_storage_path(root)
+    if global_db:
+        # 提取 composer 数据
+        for cid, data, db_path in iter_composer_data(global_db):
+            # 检查这个 composer 是否属于指定工作区
+            # 这里我们假设如果 composer 在工作区数据库中没有找到，但在全局存储中找到，
+            # 且工作区ID匹配，则属于该工作区
+            if cid not in sessions:
+                # 检查数据中是否有工作区信息
+                workspace_info = data.get("workspaceId") or data.get("workspace_id")
+                if workspace_info == workspace_id:
+                    sessions[cid]["messages"] = []
+                    # 提取对话数据
+                    conversation = data.get("conversation", [])
+                    if conversation:
+                        for msg in conversation:
+                            msg_type = msg.get("type")
+                            if msg_type is not None:
+                                role = "user" if msg_type == 1 else "assistant"
+                                content = msg.get("text", "")
+                                if content and isinstance(content, str):
+                                    sessions[cid]["messages"].append({"role": role, "content": content})
+                    
+                    # 更新最后更新时间
+                    sessions[cid]["last_updated"] = len(sessions[cid]["messages"])
+    
+    # 找到最新的会话
+    latest_session_id = None
+    max_messages = 0
+    
+    for cid, data in sessions.items():
+        if data["messages"] and len(data["messages"]) > max_messages:
+            max_messages = len(data["messages"])
+            latest_session_id = cid
+    
+    if latest_session_id:
+        logger.debug(f"Found latest session {latest_session_id} with {max_messages} messages in workspace {workspace_id}")
+    else:
+        logger.debug(f"No sessions found in workspace {workspace_id}")
+    
+    return latest_session_id
 
 def extract_project_from_git_repos(workspace_id, debug=False):
     """
@@ -1282,45 +1362,6 @@ def get_sidebar_status():
         return jsonify({"error": f"Failed to check sidebar status: {str(e)}"}), 500
 
 
-@app.route('/api/cursor/sidebar/open', methods=['POST'])
-def open_sidebar():
-    """打开AI侧边栏"""
-    try:
-        logger.info(f"Received open sidebar request from {request.remote_addr}")
-        
-        # 检查pyautogui模块是否可用
-        try:
-            import sys
-            import os
-            
-            # 添加当前目录到Python路径
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            if current_dir not in sys.path:
-                sys.path.insert(0, current_dir)
-            from pyautogu import open_ai_sidebar
-        except ImportError as e:
-            logger.error(f"pyautogu module not available: {e}")
-            return jsonify({"error": "Cursor automation not available. Please ensure pyautogu.py is properly configured."}), 500
-        
-        # 获取请求数据
-        data = request.get_json() or {}
-        skip_activation = data.get('skip_activation', False)
-        
-        logger.info(f"Opening AI sidebar, skip_activation: {skip_activation}")
-        
-        # 调用打开AI侧边栏功能
-        success = open_ai_sidebar(skip_activation=skip_activation)
-        
-        if success:
-            logger.info("AI sidebar opened successfully")
-            return jsonify({"success": True, "message": "AI sidebar opened successfully"})
-        else:
-            logger.error("Failed to open AI sidebar")
-            return jsonify({"error": "Failed to open AI sidebar. Please ensure Cursor is running and accessible."}), 500
-            
-    except Exception as e:
-        logger.error(f"Error opening sidebar: {e}")
-        return jsonify({"error": f"Failed to open sidebar: {str(e)}"}), 500
 
 
 @app.route('/api/send-to-cursor', methods=['POST'])
