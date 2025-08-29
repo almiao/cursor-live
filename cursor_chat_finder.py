@@ -89,7 +89,7 @@ def extract_all_chats() -> List[Dict[str, Any]]:
     
     if not all_workspaces:
         # Create sample data for demo purposes
-        return create_sample_chats()
+        return []
     
     for workspace in all_workspaces:
         workspace_db = workspace["workspace_db"]
@@ -119,10 +119,7 @@ def extract_all_chats() -> List[Dict[str, Any]]:
     
     # Sort by date (newest first)
     all_chats.sort(key=lambda x: x["date"], reverse=True)
-    
-    # If still no chats, return sample data for demo
-    if not all_chats:
-        return create_sample_chats()
+
         
     return all_chats
 
@@ -132,37 +129,6 @@ def create_fallback_session(session_db: pathlib.Path):
     project = {"name": "Unknown Project", "rootPath": "/"}
     messages = extract_messages(session_db)
     return ChatSession(project, messages)
-
-def create_sample_chats() -> List[Dict[str, Any]]:
-    """Create sample chat data for demo purposes"""
-    return [
-        {
-            "project": {"name": "Sample Project", "rootPath": "/path/to/sample"},
-            "messages": [
-                {"role": "user", "content": "Can you help me with this React component?"},
-                {"role": "assistant", "content": "Of course! What specific issues are you having with the component?"}
-            ],
-            "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "session_id": "sample1",
-            "workspace_id": "sample"
-        },
-        {
-            "project": {"name": "Demo API", "rootPath": "/path/to/demo-api"},
-            "messages": [
-                {"role": "user", "content": "How do I properly structure my Flask API?"},
-                {"role": "assistant", "content": "For Flask APIs, I recommend organizing your code with a blueprint structure. Here's an example..."}
-            ],
-            "date": (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),
-            "session_id": "sample2",
-            "workspace_id": "sample"
-        }
-    ]
-
-def save_all_chats(output_path: pathlib.Path):
-    """Save all extracted chats to a JSON file."""
-    chats = server.extract_chats()
-    output_path.write_text(json.dumps(chats, ensure_ascii=False, indent=2))
-    return chats
 
 if __name__ == "__main__":
     import argparse

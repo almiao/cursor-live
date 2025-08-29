@@ -1084,37 +1084,6 @@ def get_cursor_status_simple():
             "timestamp": time.time()
         }), 500
 
-@app.route('/api/cursor/focus', methods=['GET', 'POST'])
-def get_cursor_focus():
-    """获取Cursor应用的焦点状态"""
-    try:
-        # 导入cursor焦点检测器
-        import sys
-        import os
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        if current_dir not in sys.path:
-            sys.path.insert(0, current_dir)
-        
-        from cursor_focus_detector_improved import ImprovedCursorFocusDetector
-        
-        detector = ImprovedCursorFocusDetector()
-        
-        # 检查AI对话框焦点状态
-        focus_result = detector.check_cursor_ai_focus()
-        
-        return jsonify({
-            "is_focused": focus_result.get('is_ai_dialog_focused', False),
-            "cursor_detected": focus_result.get('element_info', {}).get('app_name', '').lower() == 'cursor',
-            "ai_input_detected": focus_result.get('is_ai_dialog_focused', False),
-            "element_info": focus_result.get('element_info', {}),
-            "method": focus_result.get('method', 'unknown'),
-            "status": "success" if focus_result.get('success', False) else "error",
-            "error": focus_result.get('error')
-        })
-        
-    except Exception as e:
-        logger.error(f"Error in get_cursor_focus: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/cursor/open', methods=['POST'])
 def open_cursor():

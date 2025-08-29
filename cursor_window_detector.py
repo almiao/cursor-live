@@ -241,25 +241,6 @@ class CursorWindowDetector:
         except Exception as e:
             logger.error(f"获取Cursor窗口列表时发生异常: {e}")
             return []
-    
-    def detect_dialog_state_via_accessibility(self) -> Dict[str, Any]:
-        """
-        AI对话框状态检测 - 现在使用workbench.auxiliaryBar.hidden检查
-        
-        Returns:
-            Dict[str, Any]: 检测结果
-        """
-        logger.info("AI对话框检测已更新为使用workbench.auxiliaryBar.hidden")
-        
-        return {
-            'dialog_state': 'unknown',
-            'is_dialog_open': False,
-            'is_empty': True,
-            'status': 'success',
-            'method': 'workbench.auxiliaryBar.hidden',
-            'message': '请使用/api/cursor/status?workspace_id=<workspace_id>来检查AI侧边栏状态'
-        }
-    
 
 
     def is_cursor_frontmost(self) -> Dict[str, Any]:
