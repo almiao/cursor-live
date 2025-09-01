@@ -328,35 +328,60 @@ const ChatDetail = () => {
   // 发送消息到Cursor
   const handleSendMessage = async () => {
     if (!inputText.trim() || sending) return;
-    
+
     setSending(true);
     try {
-      // 携带workspace_id和rootPath参数
+      // 使用新的send-message接口
       const payload = {
         message: inputText.trim(),
-        workspace_id: chat?.workspace_id,
-        rootPath: chat?.project?.rootPath,
-        create_new_chat: false // 默认不创建新对话
+        workspace_id: chat?.workspace_id
       };
-      
-      const response = await axios.post('/api/send-to-cursor', payload);
-      
-      // 检查是否返回了新的session_id
-      if (response.data.session_id) {
-        console.log('收到新session_id:', response.data.session_id);
-        // 可以在这里处理新对话的逻辑
+
+      // 如果已经有session_id，则传递它
+      if (chat?.session?.composerId) {
+        payload.session_id = chat.session.composerId;
       }
-      
-      setInputText('');
-      
-      // 发送完成后，提高刷新频率到5秒
-      setRefreshInterval(5000);
-      // 同时提高状态检查频率到2秒
-      setStatusCheckInterval(2000);
-      
+
+      const response = await axios.post('/api/send-message', payload);
+
+      // 检查响应
+      if (response.data.success) {
+        console.log('消息发送成功');
+
+        // 如果返回了新的session_id，更新chat状态
+        if (response.data.session_id && !chat?.session?.composerId) {
+          console.log('收到新session_id:', response.data.session_id);
+          // 更新chat状态以包含新的session_id
+          setChat(prev => ({
+            ...prev,
+            session: {
+              ...prev.session,
+              composerId: response.data.session_id
+            }
+          }));
+        }
+
+        setInputText('');
+
+        // 发送完成后，提高刷新频率到5秒
+        setRefreshInterval(5000);
+        // 同时提高状态检查频率到2秒
+        setStatusCheckInterval(2000);
+      } else {
+        throw new Error('发送消息失败');
+      }
+
     } catch (err) {
       console.error('发送失败:', err);
-      alert('发送失败，请检查后端服务是否正常运行');
+
+      // 检查是否是废弃接口的错误
+      if (err.response?.status === 410) {
+        alert('API接口已更新，请刷新页面重试');
+      } else if (err.response?.status === 400) {
+        alert('Cursor未准备好，请先创建新对话');
+      } else {
+        alert('发送失败，请检查后端服务是否正常运行');
+      }
     } finally {
       setSending(false);
     }
@@ -365,32 +390,45 @@ const ChatDetail = () => {
   // 创建新对话并发送消息
   const handleCreateNewChat = async () => {
     if (!inputText.trim() || sending) return;
-    
+
     setSending(true);
     try {
-      // 携带workspace_id和rootPath参数，并设置create_new_chat为true
-      const payload = {
-        message: inputText.trim(),
+      // 第一步：创建新对话
+      const createResponse = await axios.post('/api/create-new-chat', {
         workspace_id: chat?.workspace_id,
-        rootPath: chat?.project?.rootPath,
-        create_new_chat: true
-      };
-      
-      const response = await axios.post('/api/send-to-cursor', payload);
-      
-      // 检查是否返回了新的session_id
-      if (response.data.session_id) {
-        console.log('新对话创建成功，session_id:', response.data.session_id);
-        // 导航到新的对话页面
-        window.location.href = `/chat/${response.data.session_id}`;
+        rootPath: chat?.project?.rootPath
+      });
+
+      if (createResponse.data.success) {
+        console.log('新对话创建成功');
+
+        // 第二步：发送第一条消息
+        const messageResponse = await axios.post('/api/send-message', {
+          message: inputText.trim(),
+          workspace_id: chat?.workspace_id
+        });
+
+        if (messageResponse.data.success && messageResponse.data.session_id) {
+          console.log('消息发送成功，session_id:', messageResponse.data.session_id);
+          // 导航到新的对话页面，使用workspace_id
+          window.location.href = `/chat/${chat.workspace_id}`;
+        } else {
+          console.warn('消息发送失败，但新对话已创建');
+          setInputText('');
+        }
       } else {
-        console.warn('未收到新session_id');
-        setInputText('');
+        throw new Error('创建新对话失败');
       }
-      
+
     } catch (err) {
       console.error('创建新对话失败:', err);
-      alert('创建新对话失败，请检查后端服务是否正常运行');
+
+      // 检查是否是废弃接口的错误
+      if (err.response?.status === 410) {
+        alert('API接口已更新，请刷新页面重试');
+      } else {
+        alert('创建新对话失败，请检查后端服务是否正常运行');
+      }
     } finally {
       setSending(false);
     }

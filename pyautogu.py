@@ -114,21 +114,20 @@ class CursorAutomation:
                 'status': 'error'
             }
         
-    def detect_dialog_state(self, workspace_id: str = None) -> str:
+    def detect_dialog_state(self, workspace_id: str) -> str:
         """检测当前对话框状态（基于workbench.auxiliaryBar.hidden）
-        
+
         Args:
             workspace_id: 工作空间ID（必需，用于检查特定工作空间的侧边栏状态）
-            
+
         Returns:
             str: 'dialogue' - 检测到对话框, 'empty' - 检测到空白界面, 'unknown' - 未检测到已知状态
         """
         try:
-            if workspace_id:
-                logger.info(f"开始检测对话框状态 (workspace_id: {workspace_id})...")
-            else:
-                logger.warning("未提供workspace_id，无法检测对话框状态")
-                return 'unknown'
+            if not workspace_id:
+                raise ValueError("workspace_id 参数是必需的，不能为空")
+
+            logger.info(f"开始检测对话框状态 (workspace_id: {workspace_id})...")
             
             # 参考 /api/cursor/status 的实现，使用 workbench.auxiliaryBar.hidden 检查
             try:
@@ -207,24 +206,25 @@ class CursorAutomation:
             logger.error(f"对话框状态检测失败: {e}")
             return 'unknown'
     
-    def wait_for_dialog_state(self, expected_state: str, timeout: int = 10) -> bool:
+    def wait_for_dialog_state(self, expected_state: str, workspace_id: str, timeout: int = 5) -> bool:
         """等待特定的对话框状态
-        
+
         Args:
             expected_state: 期望的状态 ('dialogue', 'empty')
+            workspace_id: 工作空间ID
             timeout: 超时时间（秒）
-            
+
         Returns:
             bool: 是否检测到期望状态
         """
         start_time = time.time()
         while time.time() - start_time < timeout:
-            current_state = self.detect_dialog_state()
+            current_state = self.detect_dialog_state(workspace_id)
             if current_state == expected_state:
                 logger.info(f"成功检测到期望状态: {expected_state}")
                 return True
             time.sleep(0.5)
-        
+
         logger.warning(f"等待状态 {expected_state} 超时")
         return False
         
@@ -361,12 +361,13 @@ class CursorAutomation:
             logger.error(f"激活Cursor窗口失败: {e}")
             return False
     
-    def open_chat_dialog(self, skip_activation: bool = False, new_chat: bool = False) -> bool:
+    def open_chat_dialog(self, skip_activation: bool = False, new_chat: bool = False, workspace_id: str = None) -> bool:
         """调出聊天对话框或新对话
-        
+
         Args:
             skip_activation: 是否跳过激活步骤
             new_chat: 是否在已打开的对话框中创建新对话（True使用Command+T，False使用Command+I）
+            workspace_id: 工作空间ID，用于检测对话框状态
         """
         try:
             # 确保Cursor是活动窗口（如果不跳过激活）
@@ -379,7 +380,7 @@ class CursorAutomation:
             
             if new_chat:
                 # 如果要创建新对话，先检查对话框是否已打开
-                current_state = self.detect_dialog_state()
+                current_state = self.detect_dialog_state(workspace_id)
                 if current_state != 'dialogue':
                     logger.warning("对话框未打开，无法创建新对话，先打开对话框")
                     # 先打开对话框
@@ -402,7 +403,7 @@ class CursorAutomation:
                 logger.info("已发送快捷键 Command+I 打开聊天对话框")
             
             # 等待对话框打开并验证
-            if self.wait_for_dialog_state('dialogue', timeout=5):
+            if workspace_id and self.wait_for_dialog_state('dialogue', workspace_id, timeout=5):
                 logger.info("对话框操作成功")
                 return True
             else:
@@ -441,13 +442,14 @@ class CursorAutomation:
             logger.error(f"打开AI侧边栏失败: {e}")
             return False
     
-    def input_text(self, text: str) -> bool:
+    def input_text(self, text: str, workspace_id: str = None) -> bool:
         """
         在Cursor聊天对话框中输入文本
-        
+
         Args:
             text: 要输入的文本
-            
+            workspace_id: 工作空间ID
+
         Returns:
             bool: 输入成功返回True，失败返回False
         """
@@ -455,10 +457,10 @@ class CursorAutomation:
             logger.info(f"开始输入文本: {text[:50]}...")
             
             # 检测对话框状态
-            current_state = self.detect_dialog_state()
+            current_state = self.detect_dialog_state(workspace_id)
             if current_state != 'dialogue':
                 logger.warning(f"当前状态不是对话框状态: {current_state}，尝试重新打开对话框")
-                if not self.open_chat_dialog(new_chat=False):
+                if not self.open_chat_dialog(new_chat=False, workspace_id=workspace_id):
                     logger.error("无法打开对话框，输入文本失败")
                     return False
             
@@ -539,89 +541,72 @@ class CursorAutomation:
             logger.error(f"提交消息失败: {e}")
             return False
     
-    def send_to_cursor(self, text: str, max_retries: int = 3, skip_activation: bool = False, new_chat: bool = False) -> bool:
-        """完整的发送流程
-        
-        Args:
-            text: 要发送的文本
-            max_retries: 最大重试次数
-            skip_activation: 是否跳过激活步骤（当刚切换项目后使用）
-            new_chat: 是否打开新对话（True使用Command+T，False使用Command+I）
-        """
+    def send_to_cursor(self, text: str, max_retries: int = 3, skip_activation: bool = False, new_chat: bool = False, workspace_id: str = None) -> bool:
+
         logger.info("=== 开始消息发送流程 ===")
         logger.info(f"目标消息: {text[:50]}{'...' if len(text) > 50 else ''}")
         logger.info(f"最大重试次数: {max_retries}")
         logger.info(f"跳过激活: {skip_activation}")
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"\n--- 第 {attempt + 1} 次发送尝试 ---")
-                
-                # 步骤1: 检测初始页面状态
-                logger.info("步骤1: 检测当前页面状态")
-                initial_state = self.detect_dialog_state()
-                logger.info(f"初始页面状态: {initial_state}")
-                
-                # 步骤2: 激活或打开Cursor（如果不跳过激活）
-                logger.info("步骤2: 处理Cursor窗口激活")
-                if not skip_activation:
-                    logger.info("执行操作: 激活Cursor窗口")
-                    activation_result = self.activate_cursor()
-                    logger.info(f"激活结果: {'成功' if activation_result else '失败'}")
-                    if not activation_result:
-                        logger.warning("激活失败，跳过此次尝试")
-                        continue
-                else:
-                    logger.info("执行操作: 跳过激活步骤，使用当前Cursor窗口")
-                    time.sleep(2)  # 等待Cursor稳定
-                    logger.info("等待2秒让Cursor窗口稳定")
-                
-                # 步骤3: 打开聊天对话框
-                logger.info("步骤3: 打开聊天对话框")
-                pre_dialog_state = self.detect_dialog_state()
-                logger.info(f"打开对话框前的状态: {pre_dialog_state}")
-                
-                logger.info("执行操作: 调用open_chat_dialog方法")
-                dialog_result = self.open_chat_dialog(skip_activation=skip_activation, new_chat=new_chat)
-                logger.info(f"对话框打开结果: {'成功' if dialog_result else '失败'}")
-                
-                # 步骤4: 输入文本
-                logger.info("步骤4: 输入文本内容")
-                pre_input_state = self.detect_dialog_state()
-                logger.info(f"输入文本前的状态: {pre_input_state}")
-                
-                logger.info(f"执行操作: 输入文本内容 (长度: {len(text)} 字符)")
-                input_result = self.input_text(text)
-                logger.info(f"文本输入结果: {'成功' if input_result else '失败'}")
-                
-                if not input_result:
-                    logger.warning("文本输入失败，跳过此次尝试")
-                    continue
-                
-                # 步骤5: 提交消息
-                logger.info("步骤5: 提交消息")
-                logger.info("执行操作: 调用submit_message方法")
-                submit_result = self.submit_message()
-                logger.info(f"消息提交结果: {'成功' if submit_result else '失败'}")
-                
-                if not submit_result:
-                    logger.warning("消息提交失败，跳过此次尝试")
-                    continue
-                
-                # 步骤6: 验证最终状态
-                logger.info("步骤6: 验证发送完成状态")
-                final_state = self.detect_dialog_state()
-                logger.info(f"最终页面状态: {final_state}")
-                
-                logger.info("=== 消息发送成功！===")
-                return True
-                
-            except Exception as e:
-                logger.error(f"第 {attempt + 1} 次尝试发生异常: {e}")
-                import traceback
-                logger.error(f"异常详情: {traceback.format_exc()}")
-                time.sleep(2)  # 失败后等待一会儿再重试
-                logger.info(f"等待2秒后进行下一次尝试")
+
+        try:
+            logger.info(f"\n--- 第 {attempt + 1} 次发送尝试 ---")
+
+            # 步骤1: 检测初始页面状态
+            logger.info("步骤1: 检测当前页面状态")
+            initial_state = self.detect_dialog_state(workspace_id)
+            logger.info(f"初始页面状态: {initial_state}")
+
+            # 步骤2: 激活或打开Cursor（如果不跳过激活）
+            logger.info("步骤2: 处理Cursor窗口激活")
+            if not skip_activation:
+                logger.info("执行操作: 激活Cursor窗口")
+                activation_result = self.activate_cursor()
+                logger.info(f"激活结果: {'成功' if activation_result else '失败'}")
+                if not activation_result:
+                    logger.warning("激活失败，跳过此次尝试")
+            else:
+                logger.info("执行操作: 跳过激活步骤，使用当前Cursor窗口")
+                time.sleep(2)  # 等待Cursor稳定
+                logger.info("等待2秒让Cursor窗口稳定")
+
+            # 步骤3: 打开聊天对话框
+            logger.info("步骤3: 打开聊天对话框")
+            pre_dialog_state = self.detect_dialog_state(workspace_id)
+            logger.info(f"打开对话框前的状态: {pre_dialog_state}")
+
+            logger.info("执行操作: 调用open_chat_dialog方法")
+            dialog_result = self.open_chat_dialog(skip_activation=skip_activation, new_chat=new_chat, workspace_id=workspace_id)
+            logger.info(f"对话框打开结果: {'成功' if dialog_result else '失败'}")
+
+            # 步骤4: 输入文本
+            logger.info("步骤4: 输入文本内容")
+            pre_input_state = self.detect_dialog_state(workspace_id)
+            logger.info(f"输入文本前的状态: {pre_input_state}")
+
+            logger.info(f"执行操作: 输入文本内容 (长度: {len(text)} 字符)")
+            input_result = self.input_text(text, workspace_id)
+            logger.info(f"文本输入结果: {'成功' if input_result else '失败'}")
+
+            # 步骤5: 提交消息
+            logger.info("步骤5: 提交消息")
+            logger.info("执行操作: 调用submit_message方法")
+            submit_result = self.submit_message()
+            logger.info(f"消息提交结果: {'成功' if submit_result else '失败'}")
+
+
+            # 步骤6: 验证最终状态
+            logger.info("步骤6: 验证发送完成状态")
+            final_state = self.detect_dialog_state(workspace_id)
+            logger.info(f"最终页面状态: {final_state}")
+
+            logger.info("=== 消息发送成功！===")
+            return True
+
+        except Exception as e:
+            import traceback
+            logger.error(f"异常详情: {traceback.format_exc()}")
+            time.sleep(2)  # 失败后等待一会儿再重试
+            logger.info(f"等待2秒后进行下一次尝试")
         
         logger.error(f"=== 所有 {max_retries} 次尝试都失败 ===")
         return False
@@ -712,80 +697,64 @@ class CursorAutomation:
             logger.error(f"异常详情: {traceback.format_exc()}")
             return False
 
-# 如果从其他模块调用
-def receive_from_app(text: str, skip_activation: bool = False, workspace_id: str = None, force_restart: bool = False, create_new_chat: bool = False):
-    """从你的App调用这个函数
-    
-    Args:
-        text: 要发送的文本
-        skip_activation: 是否跳过激活步骤（当刚切换项目后使用）
-        workspace_id: 工作空间ID（用于日志记录）
-        force_restart: 是否强制重启Cursor
-        create_new_chat: 是否创建新对话
-    """
-    automator = CursorAutomation()
-    
-    # 如果需要创建新对话，执行重启和打开对话框，然后查找最新的对话ID
-    if create_new_chat:
-        logger.info("创建新对话：重启Cursor并打开对话框")
-        # 记录创建新对话的时间
-        import time
-        creation_time = time.time()
-        
-        # 执行重启和打开对话框的操作
-        result = automator.send_to_cursor("", skip_activation=skip_activation, new_chat=True)
-        if result:
-            logger.info("新对话准备完成，开始查找最新对话ID")
-            
-            # 等待一下让Cursor有时间创建对话记录
-            time.sleep(3)
-            
-            # 尝试查找最新的对话ID
-            try:
-                # 导入server.py中的extract_chats函数
-                import sys
-                import os
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                if current_dir not in sys.path:
-                    sys.path.insert(0, current_dir)
-                
-                # 动态导入server模块中的extract_chats函数
-                import server
-                chats = server.extract_chats()
-                
-                # 查找在创建时间之后的最新对话
-                latest_chat = None
-                latest_time = 0
-                
-                for chat in chats:
-                    chat_time = chat.get('date', 0)
-                    if chat_time > creation_time - 10:  # 允许10秒的时间差
-                        if chat_time > latest_time:
-                            latest_time = chat_time
-                            latest_chat = chat
-                
-                if latest_chat and 'session' in latest_chat and latest_chat['session']:
-                    session_id = latest_chat['session'].get('composerId')
-                    if session_id:
-                        logger.info(f"找到最新创建的对话ID: {session_id}")
-                        return True, session_id
-                
-                logger.warning("未找到最新创建的对话ID")
-                return True, None
-                
-            except Exception as e:
-                logger.error(f"查找最新对话ID时出错: {e}")
-                return True, None
-        else:
-            logger.error("新对话准备失败")
-            return False, None
-    
-    # 正常发送消息流程
-    result = automator.send_to_cursor(text, skip_activation=skip_activation)
-    return result, None
 
 def switch_cursor_project(root_path: str):
     """切换Cursor到指定项目目录"""
     automator = CursorAutomation()
     return automator.switch_cursor_project(root_path)
 
+
+def create_new_chat_in_cursor(workspace_id: str = None, force_restart: bool = False):
+    """创建新对话 - 重启&激活Cursor，开启AI对话栏，新增对话
+
+    Args:
+        workspace_id: 工作空间ID（用于日志记录）
+        force_restart: 是否强制重启Cursor
+        skip_activation: 是否跳过激活步骤
+
+    Returns:
+        bool: 操作是否成功
+    """
+    automator = CursorAutomation()
+    logger.info(f"创建新对话: workspace_id={workspace_id}, force_restart={force_restart}")
+
+    try:
+        # 3. 打开AI对话栏（Command+I）
+        logger.info("步骤3: 打开AI对话栏")
+        automator.open_chat_dialog(skip_activation=True, new_chat=False, workspace_id=workspace_id)
+        time.sleep(1)
+
+        # 4. 新增对话（Command+T）
+        logger.info("步骤4: 新增对话")
+        automator.open_chat_dialog(skip_activation=True, new_chat=True, workspace_id=workspace_id)
+        time.sleep(1)
+
+        logger.info("新对话创建完成")
+        return True
+
+    except Exception as e:
+        logger.error(f"创建新对话时发生异常: {e}")
+        return False
+
+
+def send_message_to_cursor(message: str, workspace_id: str = None, check_only: bool = False):
+    """发送消息到Cursor应用 - 预检查状态，直接输入内容
+
+    Args:
+        message: 要发送的消息内容
+        workspace_id: 工作空间ID（用于日志记录）
+        session_id: 会话ID（暂时未使用）
+        check_only: 是否只进行状态检查，不发送消息
+
+    Returns:
+        bool: 操作是否成功
+    """
+    automator = CursorAutomation()
+    logger.info(f"发送消息: workspace_id={workspace_id}, check_only={check_only}")
+
+    try:
+        result = automator.send_to_cursor(message, skip_activation=True, workspace_id=workspace_id)
+        return result
+    except Exception as e:
+        logger.error(f"发送消息时发生异常: {e}")
+        return False

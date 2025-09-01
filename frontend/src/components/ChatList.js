@@ -333,43 +333,44 @@ const ChatList = () => {
 
   /**
    * 处理新增对话按钮点击事件
-   * 调用后端send_to_cursor接口创建新对话，然后跳转到ChatDetail页面
+   * 调用后端create-new-chat接口创建新对话，然后跳转到ChatDetail页面
    */
   const handleNewChat = async (e, chat) => {
     // 阻止事件冒泡，避免触发卡片的点击事件
     e.preventDefault();
     e.stopPropagation();
-    
+
     if (isCreatingNewChat) return; // 防止重复点击
-    
+
     setIsCreatingNewChat(true);
-    
+
     try {
       console.log('Creating new chat for workspace:', chat?.workspace_id);
-      
-      // 调用现有的send_to_cursor接口，传递空消息和create_new_chat=true
-      const response = await axios.post('/api/send-to-cursor', {
-        message: '', // 空消息，仅用于创建新对话
+
+      // 调用新的create-new-chat接口
+      const response = await axios.post('/api/create-new-chat', {
         workspace_id: chat?.workspace_id,
-        rootPath: chat.project?.rootPath,
-        create_new_chat: true, // 关键参数：创建新对话
-        force_restart: false // 不强制重启，因为只是创建新对话
+        rootPath: chat.project?.rootPath
       });
-      
-      if (response.data.success && response.data.session_id) {
-        const sessionId = response.data.session_id;
-        console.log('New chat created with session_id:', sessionId);
-        
-        // 跳转到ChatDetail页面
-        navigate(`/chat/${sessionId}`);
+
+      if (response.data.success) {
+        console.log('New chat created successfully for workspace:', chat?.workspace_id);
+
+        // 使用workspace_id跳转到ChatDetail页面
+        navigate(`/chat/${chat.workspace_id}`);
       } else {
-        throw new Error('未能获取到新的session_id');
+        throw new Error('创建新对话失败');
       }
-      
+
     } catch (error) {
       console.error('Error creating new chat:', error);
-      // 显示错误提示
-      alert('创建新对话失败，请确保Cursor正在运行并重试');
+
+      // 检查是否是废弃接口的错误
+      if (error.response?.status === 410) {
+        alert('API接口已更新，请刷新页面重试');
+      } else {
+        alert('创建新对话失败，请确保Cursor正在运行并重试');
+      }
     } finally {
       setIsCreatingNewChat(false);
     }
@@ -377,49 +378,50 @@ const ChatList = () => {
 
   /**
    * 处理从项目级别新增对话按钮点击事件
-   * 调用后端send_to_cursor接口创建新对话，然后跳转到ChatDetail页面
+   * 调用后端create-new-chat接口创建新对话，然后跳转到ChatDetail页面
    */
   const handleNewChatFromProject = async (e, projectData) => {
     // 阻止事件冒泡，避免触发卡片的点击事件
     e.preventDefault();
     e.stopPropagation();
-    
+
     if (isCreatingNewChat) return; // 防止重复点击
-    
+
     setIsCreatingNewChat(true);
-    
+
     try {
       console.log('Creating new chat for project:', projectData.name);
-      
+
       // 从项目数据中获取第一个聊天的workspace_id作为参考
       const firstChat = projectData.chats[0];
       if (!firstChat || !firstChat.workspace_id) {
         throw new Error('无法获取项目的工作空间信息');
       }
-      
-      // 调用现有的send_to_cursor接口，传递空消息和create_new_chat=true
-      const response = await axios.post('/api/send-to-cursor', {
-        message: '', // 空消息，仅用于创建新对话
+
+      // 调用新的create-new-chat接口
+      const response = await axios.post('/api/create-new-chat', {
         workspace_id: firstChat.workspace_id,
-        rootPath: projectData.path,
-        create_new_chat: true, // 关键参数：创建新对话
-        force_restart: false // 不强制重启，因为只是创建新对话
+        rootPath: projectData.path
       });
-      
-      if (response.data.success && response.data.session_id) {
-        const sessionId = response.data.session_id;
-        console.log('New chat created with session_id:', sessionId);
-        
-        // 跳转到ChatDetail页面
-        navigate(`/chat/${sessionId}`);
+
+      if (response.data.success) {
+        console.log('New chat created successfully for project:', projectData.name);
+
+        // 使用workspace_id跳转到ChatDetail页面
+        navigate(`/chat/${firstChat.workspace_id}`);
       } else {
-        throw new Error('未能获取到新的session_id');
+        throw new Error('创建新对话失败');
       }
-      
+
     } catch (error) {
       console.error('Error creating new chat from project:', error);
-      // 显示错误提示
-      alert('创建新对话失败，请确保Cursor正在运行并重试');
+
+      // 检查是否是废弃接口的错误
+      if (error.response?.status === 410) {
+        alert('API接口已更新，请刷新页面重试');
+      } else {
+        alert('创建新对话失败，请确保Cursor正在运行并重试');
+      }
     } finally {
       setIsCreatingNewChat(false);
     }

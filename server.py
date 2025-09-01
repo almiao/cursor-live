@@ -1322,42 +1322,6 @@ def quit_cursor():
             "message": "退出Cursor应用时发生错误"
         }), 500
 
-@app.route('/api/cursor/dialog/open', methods=['POST'])
-def open_cursor_dialog():
-    """打开Cursor AI对话框"""
-    try:
-        # 导入cursor自动化模块
-        import sys
-        import os
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        if current_dir not in sys.path:
-            sys.path.insert(0, current_dir)
-        
-        from pyautogu import CursorAutomation
-        
-        automation = CursorAutomation()
-        
-        # 尝试打开对话框
-        success = automation.open_chat_dialog()
-        
-        if success:
-            return jsonify({
-                "success": True,
-                "message": "AI对话框已成功打开"
-            })
-        else:
-            return jsonify({
-                "success": False,
-                "message": "打开AI对话框失败"
-            }), 500
-        
-    except Exception as e:
-        logger.error(f"Error in open_cursor_dialog: {e}", exc_info=True)
-        return jsonify({
-            "success": False,
-            "error": str(e),
-            "message": "打开AI对话框时发生错误"
-        }), 500
 
 @app.route('/api/cursor/dialog/close', methods=['POST'])
 def close_cursor_dialog():
@@ -1434,102 +1398,185 @@ def get_sidebar_status():
 
 
 
-@app.route('/api/send-to-cursor', methods=['POST'])
-def send_to_cursor():
-    """发送消息到Cursor应用"""
+@app.route('/api/create-new-chat', methods=['POST'])
+def create_new_chat():
+    """创建新对话 - 重启&激活Cursor，开启AI对话栏，新增对话"""
     global current_workspace_id
-    
+
     try:
-        logger.info(f"Received send-to-cursor request from {request.remote_addr}")
-        
+        logger.info(f"Received create-new-chat request from {request.remote_addr}")
+
         # 获取请求数据
         data = request.get_json()
-        if not data or 'message' not in data:
-            return jsonify({"error": "Missing 'message' field in request"}), 400
-        
-        message = data['message'].strip()
-        create_new_chat = data.get('create_new_chat', False)
-        
-        # 只有在不是创建新对话时才要求消息不能为空
-        if not create_new_chat and not message:
-            return jsonify({"error": "Message cannot be empty"}), 400
-        
+        if not data:
+            return jsonify({"error": "Request data is required"}), 400
+
         # 获取workspace_id和rootPath
         workspace_id = data.get('workspace_id')
         root_path = data.get('rootPath')
-        
-        logger.info(f"Attempting to send message to Cursor: {message[:100]}...")
-        logger.info(f"Workspace ID: {workspace_id}, Root Path: {root_path}")
+
+        logger.info(f"Creating new chat for workspace: {workspace_id}, root path: {root_path}")
         logger.info(f"Current workspace ID: {current_workspace_id}")
-        
+
         # 检查pyautogui模块是否可用
         try:
             import sys
             import os
-            
+
             # 添加当前目录到Python路径
             current_dir = os.path.dirname(os.path.abspath(__file__))
             if current_dir not in sys.path:
                 sys.path.insert(0, current_dir)
-            from pyautogu import receive_from_app
+            from pyautogu import create_new_chat_in_cursor
             from pyautogu import switch_cursor_project
         except ImportError as e:
             logger.error(f"pyautogu module not available: {e}")
             return jsonify({"error": "Cursor automation not available. Please ensure pyautogu.py is properly configured."}), 500
-        
-        # 检查workspace_id是否与当前暂存的一致
-        project_switched = False
-        force_restart = False
-        
-        # 判断是否需要强制重启Cursor
-        if workspace_id and workspace_id != current_workspace_id:
-            logger.info(f"Workspace changed from {current_workspace_id} to {workspace_id}")
-            
-            # 如果有rootPath，则切换到目标项目
-            if root_path:
-                logger.info(f"Switching to project: {root_path}")
-                switch_success = switch_cursor_project(root_path)
-                if not switch_success:
-                    logger.error(f"Failed to switch to project: {root_path}")
-                    return jsonify({"error": f"Failed to switch to project: {root_path}"}), 500
-                
-                # 更新当前workspace_id
-                current_workspace_id = workspace_id
-                logger.info(f"Successfully switched to workspace: {workspace_id}")
-                project_switched = True
-            else:
-                logger.warning("Workspace ID provided but no rootPath available for switching")
-        elif current_workspace_id is None:
-            # 首次发送消息时强制重启
-            logger.info("First time sending message, forcing Cursor restart")
-            force_restart = True
-        
-        # create_new_chat 已经在前面获取了
-        
-        # 调用pyautogui发送消息到Cursor
-        # 如果刚切换了项目或首次发送，跳过激活步骤避免重复操作
-        result = receive_from_app(message, skip_activation=project_switched, workspace_id=workspace_id, force_restart=force_restart, create_new_chat=create_new_chat)
-        
+        # 如果有rootPath，则切换到目标项目
+        if root_path:
+            logger.info(f"Switching to project: {root_path}")
+            switch_success = switch_cursor_project(root_path)
+            if not switch_success:
+                logger.error(f"Failed to switch to project: {root_path}")
+                return jsonify({"error": f"Failed to switch to project: {root_path}"}), 500
+
+            logger.info(f"Successfully switched to workspace: {workspace_id}")
+            project_switched = True
+        else:
+            logger.warning("Workspace ID provided but no rootPath available for switching")
+
+
+        # 调用pyautogui创建新对话
+        success = create_new_chat_in_cursor(workspace_id=workspace_id)
+
+        if success:
+            logger.info("New chat successfully created in Cursor")
+            return jsonify({
+                "success": True,
+                "message": "New chat created successfully",
+                "workspace_id": workspace_id
+            })
+        else:
+            logger.error("Failed to create new chat in Cursor")
+            return jsonify({"error": "Failed to create new chat. Please ensure Cursor is running and accessible."}), 500
+
+    except Exception as e:
+        logger.error(f"Error in create_new_chat: {e}", exc_info=True)
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
+@app.route('/api/send-message', methods=['POST'])
+def send_message():
+    """发送消息到Cursor应用 - 预检查状态，直接输入内容，轮询session_id"""
+    global current_workspace_id
+
+    try:
+        logger.info(f"Received send-message request from {request.remote_addr}")
+
+        # 获取请求数据
+        data = request.get_json()
+        if not data or 'message' not in data:
+            return jsonify({"error": "Missing 'message' field in request"}), 400
+
+        message = data['message'].strip()
+        if not message:
+            return jsonify({"error": "Message cannot be empty"}), 400
+
+        # 获取workspace_id和session_id
+        workspace_id = data.get('workspace_id')
+        session_id = data.get('session_id')
+
+        logger.info(f"Sending message to Cursor: {message[:100]}...")
+        logger.info(f"Workspace ID: {workspace_id}, Session ID: {session_id}")
+
+        # 检查pyautogui模块是否可用
+        try:
+            import sys
+            import os
+
+            # 添加当前目录到Python路径
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            if current_dir not in sys.path:
+                sys.path.insert(0, current_dir)
+            from pyautogu import send_message_to_cursor
+        except ImportError as e:
+            logger.error(f"pyautogu module not available: {e}")
+            return jsonify({"error": "Cursor automation not available. Please ensure pyautogu.py is properly configured."}), 500
+
+        # 预检查Cursor状态
+        status_check = send_message_to_cursor("", workspace_id=workspace_id, check_only=True)
+        if not status_check:
+            return jsonify({"error": "Cursor is not active or AI chat panel is not open. Please use /api/create-new-chat first."}), 400
+
+        # 发送消息
+        result = send_message_to_cursor(message, workspace_id=workspace_id, session_id=session_id)
+
         # 解析返回结果
         if isinstance(result, tuple):
-            success, session_id = result
+            success, response_session_id = result
         else:
-            success, session_id = result, None
-        
+            success, response_session_id = result, session_id
+
         if success:
+            # 如果前端没有提供session_id，需要轮询最新的session
+            if not session_id and workspace_id:
+                logger.info("No session_id provided, polling for latest session...")
+
+                # 轮询获取最新的session_id和内容
+                max_polls = 30  # 最多轮询30次
+                poll_interval = 1  # 每次间隔1秒
+
+                for i in range(max_polls):
+                    logger.debug(f"Polling attempt {i + 1}/{max_polls}")
+
+                    # 获取最新的session信息
+                    latest_session = get_latest_session_id(workspace_id)
+
+                    if latest_session:
+                        latest_messages = latest_session.get('messages', [])
+
+                        # 检查是否有匹配的用户消息
+                        for msg in latest_messages:
+                            if msg.get('role') == 'user' and msg.get('content', '').strip() == message:
+                                response_session_id = latest_session['session_id']
+                                logger.info(f"Found matching session: {response_session_id}")
+                                break
+
+                        if response_session_id:
+                            break
+
+                    # 等待一秒后继续轮询
+                    import time
+                    time.sleep(poll_interval)
+
+                if not response_session_id:
+                    logger.warning("Could not find matching session after polling")
+
             logger.info("Message successfully sent to Cursor")
-            response_data = {"success": True, "message": "Message sent to Cursor successfully"}
-            if session_id:
-                response_data["session_id"] = session_id
-                logger.info(f"New session created with ID: {session_id}")
+            response_data = {
+                "success": True,
+                "message": "Message sent to Cursor successfully"
+            }
+
+            if response_session_id:
+                response_data["session_id"] = response_session_id
+                logger.info(f"Session ID: {response_session_id}")
+
             return jsonify(response_data)
         else:
             logger.error("Failed to send message to Cursor")
-            return jsonify({"error": "Failed to send message to Cursor. Please ensure Cursor is running and accessible."}), 500
-            
+            return jsonify({"error": "Failed to send message to Cursor"}), 500
+
     except Exception as e:
-        logger.error(f"Error in send_to_cursor: {e}", exc_info=True)
+        logger.error(f"Error in send_message: {e}", exc_info=True)
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
+@app.route('/api/send-to-cursor', methods=['POST'])
+def send_to_cursor():
+    """发送消息到Cursor应用 - 兼容旧接口，已废弃，请使用 /api/create-new-chat 和 /api/send-message"""
+    logger.warning("Deprecated endpoint /api/send-to-cursor called. Please use /api/create-new-chat and /api/send-message instead.")
+    return jsonify({"error": "This endpoint is deprecated. Please use /api/create-new-chat and /api/send-message instead."}), 410
 
 @app.route('/api/chat/<session_id>/export', methods=['GET'])
 def export_chat(session_id):
