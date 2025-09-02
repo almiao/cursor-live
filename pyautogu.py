@@ -399,14 +399,60 @@ class CursorAutomation:
             workspace_id: 工作空间ID，用于检测对话框状态
         """
         try:
-            # 发送快捷键：Command/Ctrl + T（在对话框中创建新对话）
-            pyautogui.hotkey(self.modifier, 't')
-            logger.info("已发送快捷键 Command+T 在对话框中创建新对话")
+            logger.info("尝试创建新对话...")
             
-            # 等待新对话创建完成
-            time.sleep(1)
-            logger.info("新对话创建成功")
-            return True
+            # 方法1: 尝试使用 Command+Shift+L（Cursor中创建新对话的常用快捷键）
+            try:
+                pyautogui.hotkey(self.modifier, 'shift', 'l')
+                logger.info("已发送快捷键 Command+Shift+L 创建新对话")
+                time.sleep(1)
+                logger.info("新对话创建成功")
+                return True
+            except Exception as e:
+                logger.warning(f"Command+Shift+L 失败: {e}")
+            
+            # 方法2: 尝试使用 Command+T（虽然通常是新标签页，但某些情况下可能有效）
+            try:
+                pyautogui.hotkey(self.modifier, 't')
+                logger.info("已发送快捷键 Command+T 创建新对话")
+                time.sleep(1)
+                logger.info("新对话创建成功")
+                return True
+            except Exception as e:
+                logger.warning(f"Command+T 失败: {e}")
+            
+            # 方法3: 尝试使用 Command+N（新对话的另一种可能快捷键）
+            try:
+                pyautogui.hotkey(self.modifier, 'n')
+                logger.info("已发送快捷键 Command+N 创建新对话")
+                time.sleep(1)
+                logger.info("新对话创建成功")
+                return True
+            except Exception as e:
+                logger.warning(f"Command+N 失败: {e}")
+            
+            # 如果所有快捷键都失败，尝试点击界面上的"New Chat"按钮
+            logger.info("所有快捷键都失败，尝试查找并点击New Chat按钮...")
+            
+            # 等待一下让界面稳定
+            time.sleep(2)
+            
+            # 尝试查找"New Chat"按钮（可能需要根据实际界面调整）
+            try:
+                # 查找包含"New Chat"、"新对话"等文本的按钮
+                new_chat_button = pyautogui.locateOnScreen('new_chat_button.png', confidence=0.8)
+                if new_chat_button:
+                    pyautogui.click(new_chat_button)
+                    logger.info("已点击New Chat按钮")
+                    time.sleep(1)
+                    return True
+                else:
+                    logger.warning("未找到New Chat按钮图片")
+            except Exception as e:
+                logger.warning(f"查找New Chat按钮失败: {e}")
+            
+            logger.error("所有创建新对话的方法都失败了")
+            return False
             
         except Exception as e:
             logger.error(f"创建新对话失败: {e}")
@@ -612,6 +658,23 @@ class CursorAutomation:
             
             if self.system == 'Darwin':
                 logger.info("执行方式: macOS Terminal + AppleScript")
+                
+                # 先关闭Cursor
+                logger.info("正在关闭Cursor...")
+                close_script = '''
+                tell application "Cursor"
+                    quit
+                end tell
+                '''
+                close_result = subprocess.run(['osascript', '-e', close_script], capture_output=True, text=True)
+                if close_result.returncode == 0:
+                    logger.info("✓ 成功关闭Cursor")
+                    time.sleep(2)  # 等待Cursor完全关闭
+                else:
+                    logger.warning(f"关闭Cursor时出现警告: {close_result.stderr}")
+                
+                # 然后打开新项目
+                logger.info("正在打开新项目...")
                 script = f'''
                 tell application "Terminal"
                     activate
@@ -685,7 +748,6 @@ def create_new_chat_in_cursor(workspace_id: str = None, force_restart: bool = Fa
     Args:
         workspace_id: 工作空间ID（用于日志记录）
         force_restart: 是否强制重启Cursor
-        skip_activation: 是否跳过激活步骤
 
     Returns:
         bool: 操作是否成功
@@ -694,15 +756,38 @@ def create_new_chat_in_cursor(workspace_id: str = None, force_restart: bool = Fa
     logger.info(f"创建新对话: workspace_id={workspace_id}, force_restart={force_restart}")
 
     try:
+        # 1. 如果强制重启，先关闭Cursor
+        if force_restart:
+            logger.info("步骤1: 强制重启Cursor")
+            if automator.system == 'Darwin':
+                close_script = '''
+                tell application "Cursor"
+                    quit
+                end tell
+                '''
+                close_result = subprocess.run(['osascript', '-e', close_script], capture_output=True, text=True)
+                if close_result.returncode == 0:
+                    logger.info("✓ 成功关闭Cursor")
+                    time.sleep(2)  # 等待Cursor完全关闭
+                else:
+                    logger.warning(f"关闭Cursor时出现警告: {close_result.stderr}")
+            else:
+                logger.warning("非macOS系统，跳过强制重启")
+
+        # 2. 激活Cursor
+        logger.info("步骤2: 激活Cursor")
+        automator.activate_cursor()
+        time.sleep(2)
+
         # 3. 打开AI对话栏（Command+I）
         logger.info("步骤3: 打开AI对话栏")
         automator.open_chat_dialog(workspace_id=workspace_id)
         time.sleep(1)
 
-        # 4. 新增对话（Command+T）
-        logger.info("步骤4: 新增对话")
-        automator.create_new_chat(workspace_id=workspace_id)
-        time.sleep(1)
+        # # 4. 新增对话（尝试多种方法）
+        # logger.info("步骤4: 新增对话")
+        # automator.create_new_chat(workspace_id=workspace_id)
+        # time.sleep(1)
 
         logger.info("新对话创建完成")
         return True

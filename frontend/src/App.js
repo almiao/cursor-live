@@ -167,7 +167,6 @@ function App() {
           <Route path="/" element={<ChatList />} />
           <Route path="/chat/new/:workspaceId" element={<ChatDetail />} />
           <Route path="/chat/:sessionId" element={<ChatDetail />} />
-
         </Routes>
       </Router>
     </ThemeProvider>

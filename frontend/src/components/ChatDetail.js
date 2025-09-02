@@ -616,11 +616,14 @@ const ChatDetail = () => {
 
   // 轮询获取session_id
   const pollForSessionId = async (workspaceId, messageContent, maxAttempts = 10) => {
-    console.log('开始轮询获取session_id，工作空间:', workspaceId, '消息:', messageContent);
+    console.log('🔄 开始轮询获取session_id');
+    console.log('工作空间:', workspaceId);
+    console.log('消息内容:', messageContent);
+    console.log('最大尝试次数:', maxAttempts);
     
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        console.log(`第 ${attempt} 次尝试获取session_id...`);
+        console.log(`📡 第 ${attempt} 次尝试获取session_id...`);
         
         // 调用get_latest_session_id接口
         const response = await axios.get('/api/latest-session', {
@@ -628,7 +631,7 @@ const ChatDetail = () => {
         });
         
         if (response.data && response.data.session_id) {
-          console.log('轮询成功获得session_id:', response.data.session_id);
+          console.log('✅ 轮询成功获得session_id:', response.data.session_id);
           
           // 检查是否包含我们发送的消息
           const messages = response.data.messages || [];
@@ -637,26 +640,33 @@ const ChatDetail = () => {
           );
           
           if (hasOurMessage) {
-            console.log('找到匹配的消息，跳转到新对话页面');
+            console.log('🎯 找到匹配的消息，准备跳转到新对话页面');
+            console.log('跳转URL:', `/chat/${response.data.session_id}`);
+            // 使用window.location.href确保页面完全刷新，避免状态混乱
             window.location.href = `/chat/${response.data.session_id}`;
             return;
           } else {
-            console.log('未找到匹配的消息，继续轮询...');
+            console.log('⚠️ 未找到匹配的消息，继续轮询...');
+            console.log('当前消息数量:', messages.length);
           }
+        } else {
+          console.log('⚠️ 响应中没有session_id');
         }
         
         // 等待2秒后重试
+        console.log('⏳ 等待2秒后重试...');
         await new Promise(resolve => setTimeout(resolve, 2000));
         
       } catch (error) {
-        console.error(`第 ${attempt} 次轮询失败:`, error);
+        console.error(`❌ 第 ${attempt} 次轮询失败:`, error);
         if (attempt < maxAttempts) {
+          console.log('⏳ 等待2秒后重试...');
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
       }
     }
     
-    console.error('轮询超时，无法获取session_id');
+    console.error('⏰ 轮询超时，无法获取session_id');
     alert('无法获取对话ID，请刷新页面重试');
   };
 
