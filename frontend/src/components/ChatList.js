@@ -356,8 +356,14 @@ const ChatList = () => {
       if (response.data.success) {
         console.log('New chat created successfully for workspace:', chat?.workspace_id);
 
-        // 使用workspace_id跳转到ChatDetail页面
-        navigate(`/chat/${chat.workspace_id}`);
+        // 保存工作空间信息到localStorage
+        localStorage.setItem('recentWorkspace', JSON.stringify({
+          workspace_id: chat?.workspace_id,
+          rootPath: chat.project?.rootPath
+        }));
+
+        // 跳转到新建聊天页面，携带workspaceId
+        navigate(`/chat/new/${chat?.workspace_id}`);
       } else {
         throw new Error('创建新对话失败');
       }
@@ -407,8 +413,14 @@ const ChatList = () => {
       if (response.data.success) {
         console.log('New chat created successfully for project:', projectData.name);
 
-        // 使用workspace_id跳转到ChatDetail页面
-        navigate(`/chat/${firstChat.workspace_id}`);
+        // 保存工作空间信息到localStorage
+        localStorage.setItem('recentWorkspace', JSON.stringify({
+          workspace_id: firstChat.workspace_id,
+          rootPath: projectData.path
+        }));
+
+        // 跳转到新建聊天页面，携带workspaceId
+        navigate(`/chat/new/${firstChat.workspace_id}`);
       } else {
         throw new Error('创建新对话失败');
       }

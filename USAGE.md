@@ -83,7 +83,7 @@
 
 3. **消息发送失败**
    - 检查Cursor是否正在运行
-   - 确保AI对话框快捷键正常工作（macOS: Option+Command+B, Windows/Linux: Ctrl+I）
+   - 确保AI对话框快捷键正常工作（macOS: Command+I, Windows/Linux: Ctrl+I）
    - 检查是否有其他应用占用了快捷键
 
 ### 调试模式

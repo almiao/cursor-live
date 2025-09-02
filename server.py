@@ -650,18 +650,20 @@ def get_latest_session_id(workspace_id: str) -> Optional[Dict[str, Any]]:
     
     # 1. 处理工作区数据库
     workspace_db = None
+    found_ws_id = None
     for ws_id, db in workspaces(root):
         if ws_id == workspace_id:
             workspace_db = db
+            found_ws_id = ws_id
             break
     
-    if workspace_db:
+    if workspace_db and found_ws_id:
         logger.debug(f"Processing workspace DB: {workspace_db}")
         # 获取工作区信息
         proj, meta = workspace_info(workspace_db)
         for cid, m in meta.items():
             comp_meta[cid] = m
-            comp2ws[cid] = ws_id
+            comp2ws[cid] = found_ws_id
 
         # 从工作区数据库提取聊天数据
         msg_count = 0
@@ -670,7 +672,7 @@ def get_latest_session_id(workspace_id: str) -> Optional[Dict[str, Any]]:
             if cid not in comp_meta:
                 comp_meta[cid] = {"title": f"Chat {cid[:8]}", "createdAt": None, "lastUpdatedAt": None}
             if cid not in comp2ws:
-                comp2ws[cid] = ws_id
+                comp2ws[cid] = found_ws_id
             msg_count += 1
         logger.debug(f"  - Extracted {msg_count} messages from workspace {workspace_id}")
     
@@ -1161,6 +1163,10 @@ def get_cursor_status_simple():
         # 获取workspace_id参数
         workspace_id = request.args.get('workspace_id')
         
+        # 如果没有workspace_id，记录警告但继续执行
+        if not workspace_id:
+            logger.warning("对话框状态检测失败: workspace_id 参数是必需的，不能为空")
+        
         # 检查窗口状态（是否为前台应用）
         is_active = automation.is_cursor_frontmost()
         
@@ -1503,19 +1509,16 @@ def send_message():
             logger.error(f"pyautogu module not available: {e}")
             return jsonify({"error": "Cursor automation not available. Please ensure pyautogu.py is properly configured."}), 500
 
-        # 预检查Cursor状态
-        status_check = send_message_to_cursor("", workspace_id=workspace_id, check_only=True)
-        if not status_check:
-            return jsonify({"error": "Cursor is not active or AI chat panel is not open. Please use /api/create-new-chat first."}), 400
-
-        # 发送消息
-        result = send_message_to_cursor(message, workspace_id=workspace_id, session_id=session_id)
-
-        # 解析返回结果
-        if isinstance(result, tuple):
-            success, response_session_id = result
-        else:
-            success, response_session_id = result, session_id
+        # 发送消息到Cursor
+        try:
+            result = send_message_to_cursor(message, workspace_id)
+            if result:
+                success, response_session_id = True, session_id
+            else:
+                success, response_session_id = False, session_id
+        except Exception as e:
+            logger.error(f"Failed to send message to Cursor: {e}")
+            return jsonify({"error": f"Failed to send message: {str(e)}"}), 500
 
         if success:
             # 如果前端没有提供session_id，需要轮询最新的session
@@ -1577,6 +1580,29 @@ def send_to_cursor():
     """发送消息到Cursor应用 - 兼容旧接口，已废弃，请使用 /api/create-new-chat 和 /api/send-message"""
     logger.warning("Deprecated endpoint /api/send-to-cursor called. Please use /api/create-new-chat and /api/send-message instead.")
     return jsonify({"error": "This endpoint is deprecated. Please use /api/create-new-chat and /api/send-message instead."}), 410
+
+@app.route('/api/latest-session', methods=['GET'])
+def get_latest_session_api():
+    """获取指定工作空间的最新会话ID"""
+    try:
+        workspace_id = request.args.get('workspace_id')
+        if not workspace_id:
+            return jsonify({"error": "workspace_id parameter is required"}), 400
+        
+        logger.info(f"Getting latest session for workspace: {workspace_id}")
+        
+        latest_session = get_latest_session_id(workspace_id)
+        
+        if latest_session:
+            logger.info(f"Found latest session: {latest_session['session_id']}")
+            return jsonify(latest_session)
+        else:
+            logger.warning(f"No sessions found for workspace: {workspace_id}")
+            return jsonify({"error": "No sessions found"}), 404
+            
+    except Exception as e:
+        logger.error(f"Error getting latest session: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/chat/<session_id>/export', methods=['GET'])
 def export_chat(session_id):

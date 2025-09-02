@@ -361,57 +361,62 @@ class CursorAutomation:
             logger.error(f"激活Cursor窗口失败: {e}")
             return False
     
-    def open_chat_dialog(self, skip_activation: bool = False, new_chat: bool = False, workspace_id: str = None) -> bool:
-        """调出聊天对话框或新对话
+    def open_chat_dialog(self, workspace_id: str = None) -> bool:
+        """打开聊天对话框
 
         Args:
-            skip_activation: 是否跳过激活步骤
-            new_chat: 是否在已打开的对话框中创建新对话（True使用Command+T，False使用Command+I）
             workspace_id: 工作空间ID，用于检测对话框状态
         """
         try:
-            # 确保Cursor是活动窗口（如果不跳过激活）
-            if not skip_activation:
-                self.activate_cursor()
-                time.sleep(1)  # 等待窗口激活
-            else:
-                logger.info("跳过对话框激活步骤")
-                time.sleep(0.5)  # 短暂等待
+            # 检测当前对话框状态
+            current_state = self.detect_dialog_state(workspace_id)
+            if current_state == 'dialogue':
+                logger.info("对话框已经打开，无需重复打开")
+                return True
             
-            if new_chat:
-                # 如果要创建新对话，先检查对话框是否已打开
-                current_state = self.detect_dialog_state(workspace_id)
-                if current_state != 'dialogue':
-                    logger.warning("对话框未打开，无法创建新对话，先打开对话框")
-                    # 先打开对话框
-                    pyautogui.hotkey(self.modifier, 'i')
-                    logger.info("已发送快捷键 Command+I 打开聊天对话框")
-                    time.sleep(2)  # 等待对话框打开
-                
-                # 发送快捷键：Command/Ctrl + T（在对话框中创建新对话）
-                pyautogui.hotkey(self.modifier, 't')
-                logger.info("已发送快捷键 Command+T 在对话框中创建新对话")
-            else:
-                # 检测当前对话框状态
-                current_state = self.detect_dialog_state()
-                if current_state == 'dialogue':
-                    logger.info("对话框已经打开，无需重复打开")
-                    return True
-                
-                # 发送快捷键：Command/Ctrl + I（打开聊天对话框）
-                pyautogui.hotkey(self.modifier, 'i')
-                logger.info("已发送快捷键 Command+I 打开聊天对话框")
+            # 发送快捷键：Command/Ctrl + I（打开聊天对话框）
+            pyautogui.hotkey(self.modifier, 'i')
+            logger.info("已发送快捷键 Command+I 打开聊天对话框")
             
             # 等待对话框打开并验证
             if workspace_id and self.wait_for_dialog_state('dialogue', workspace_id, timeout=5):
-                logger.info("对话框操作成功")
+                logger.info("对话框打开成功")
                 return True
             else:
-                logger.warning("对话框操作可能未成功")
+                logger.warning("对话框打开可能未成功")
                 return False
             
         except Exception as e:
             logger.error(f"打开聊天对话框失败: {e}")
+            return False
+
+    def create_new_chat(self, workspace_id: str = None) -> bool:
+        """在已打开的对话框中创建新对话
+
+        Args:
+            workspace_id: 工作空间ID，用于检测对话框状态
+        """
+        try:
+            # 检查对话框是否已打开
+            current_state = self.detect_dialog_state(workspace_id)
+            if current_state != 'dialogue':
+                logger.warning("对话框未打开，无法创建新对话，先打开对话框")
+                # 先打开对话框
+                if not self.open_chat_dialog(workspace_id):
+                    logger.error("无法打开对话框，无法创建新对话")
+                    return False
+            
+            # 发送快捷键：Command/Ctrl + T（在对话框中创建新对话）
+            pyautogui.hotkey(self.modifier, 't')
+            logger.info("已发送快捷键 Command+T 在对话框中创建新对话")
+            
+            # 等待新对话创建完成
+            time.sleep(1)
+            logger.info("新对话创建成功")
+            return True
+            
+        except Exception as e:
+            logger.error(f"创建新对话失败: {e}")
             return False
     
     def open_ai_sidebar(self, skip_activation: bool = False) -> bool:
@@ -460,7 +465,7 @@ class CursorAutomation:
             current_state = self.detect_dialog_state(workspace_id)
             if current_state != 'dialogue':
                 logger.warning(f"当前状态不是对话框状态: {current_state}，尝试重新打开对话框")
-                if not self.open_chat_dialog(new_chat=False, workspace_id=workspace_id):
+                if not self.open_chat_dialog(workspace_id):
                     logger.error("无法打开对话框，输入文本失败")
                     return False
             
@@ -541,58 +546,33 @@ class CursorAutomation:
             logger.error(f"提交消息失败: {e}")
             return False
     
-    def send_to_cursor(self, text: str, max_retries: int = 3, skip_activation: bool = False, new_chat: bool = False, workspace_id: str = None) -> bool:
+    def send_to_cursor(self, text: str, max_retries: int = 1, new_chat: bool = False, workspace_id: str = None) -> bool:
 
         logger.info("=== 开始消息发送流程 ===")
         logger.info(f"目标消息: {text[:50]}{'...' if len(text) > 50 else ''}")
         logger.info(f"最大重试次数: {max_retries}")
-        logger.info(f"跳过激活: {skip_activation}")
 
         try:
-            logger.info(f"\n--- 第 {attempt + 1} 次发送尝试 ---")
-
             # 步骤1: 检测初始页面状态
             logger.info("步骤1: 检测当前页面状态")
             initial_state = self.detect_dialog_state(workspace_id)
             logger.info(f"初始页面状态: {initial_state}")
 
-            # 步骤2: 激活或打开Cursor（如果不跳过激活）
-            logger.info("步骤2: 处理Cursor窗口激活")
-            if not skip_activation:
-                logger.info("执行操作: 激活Cursor窗口")
-                activation_result = self.activate_cursor()
-                logger.info(f"激活结果: {'成功' if activation_result else '失败'}")
-                if not activation_result:
-                    logger.warning("激活失败，跳过此次尝试")
-            else:
-                logger.info("执行操作: 跳过激活步骤，使用当前Cursor窗口")
-                time.sleep(2)  # 等待Cursor稳定
-                logger.info("等待2秒让Cursor窗口稳定")
-
-            # 步骤3: 打开聊天对话框
-            logger.info("步骤3: 打开聊天对话框")
-            pre_dialog_state = self.detect_dialog_state(workspace_id)
-            logger.info(f"打开对话框前的状态: {pre_dialog_state}")
-
             logger.info("执行操作: 调用open_chat_dialog方法")
-            dialog_result = self.open_chat_dialog(skip_activation=skip_activation, new_chat=new_chat, workspace_id=workspace_id)
+            dialog_result = self.open_chat_dialog(workspace_id)
             logger.info(f"对话框打开结果: {'成功' if dialog_result else '失败'}")
 
             # 步骤4: 输入文本
-            logger.info("步骤4: 输入文本内容")
-            pre_input_state = self.detect_dialog_state(workspace_id)
-            logger.info(f"输入文本前的状态: {pre_input_state}")
-
+            logger.info("步骤2: 输入文本内容")
             logger.info(f"执行操作: 输入文本内容 (长度: {len(text)} 字符)")
             input_result = self.input_text(text, workspace_id)
             logger.info(f"文本输入结果: {'成功' if input_result else '失败'}")
 
             # 步骤5: 提交消息
-            logger.info("步骤5: 提交消息")
+            logger.info("步骤3: 提交消息")
             logger.info("执行操作: 调用submit_message方法")
             submit_result = self.submit_message()
             logger.info(f"消息提交结果: {'成功' if submit_result else '失败'}")
-
 
             # 步骤6: 验证最终状态
             logger.info("步骤6: 验证发送完成状态")
@@ -721,12 +701,12 @@ def create_new_chat_in_cursor(workspace_id: str = None, force_restart: bool = Fa
     try:
         # 3. 打开AI对话栏（Command+I）
         logger.info("步骤3: 打开AI对话栏")
-        automator.open_chat_dialog(skip_activation=True, new_chat=False, workspace_id=workspace_id)
+        automator.open_chat_dialog(workspace_id=workspace_id)
         time.sleep(1)
 
         # 4. 新增对话（Command+T）
         logger.info("步骤4: 新增对话")
-        automator.open_chat_dialog(skip_activation=True, new_chat=True, workspace_id=workspace_id)
+        automator.create_new_chat(workspace_id=workspace_id)
         time.sleep(1)
 
         logger.info("新对话创建完成")
@@ -753,7 +733,7 @@ def send_message_to_cursor(message: str, workspace_id: str = None, check_only: b
     logger.info(f"发送消息: workspace_id={workspace_id}, check_only={check_only}")
 
     try:
-        result = automator.send_to_cursor(message, skip_activation=True, workspace_id=workspace_id)
+        result = automator.send_to_cursor(message, workspace_id=workspace_id)
         return result
     except Exception as e:
         logger.error(f"发送消息时发生异常: {e}")

@@ -41,10 +41,12 @@ import AddIcon from '@mui/icons-material/Add';
 import { colors } from '../App';
 
 const ChatDetail = () => {
-  const { sessionId } = useParams();
+  const { sessionId, workspaceId: urlWorkspaceId } = useParams();
   const [chat, setChat] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [isNewChat, setIsNewChat] = useState(false);
+  const [workspaceId, setWorkspaceId] = useState(null);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [formatDialogOpen, setFormatDialogOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState('html');
@@ -86,6 +88,21 @@ const ChatDetail = () => {
 
   // 获取聊天数据
   const fetchChat = useCallback(async () => {
+    console.log('fetchChat 被调用 - sessionId:', sessionId, 'isNewChat:', isNewChat);
+    
+    // 如果是新建聊天页面或sessionId为'new'，不获取数据
+    if (isNewChat || sessionId === 'new') {
+      console.log('新建聊天页面，跳过fetchChat');
+      return;
+    }
+
+    // 确保sessionId不是undefined或无效值
+    if (!sessionId || sessionId === 'undefined' || sessionId === 'null') {
+      console.log('sessionId无效，跳过fetchChat');
+      return;
+    }
+
+    console.log('开始获取聊天数据，sessionId:', sessionId);
     try {
       const response = await axios.get(`/api/chat/${sessionId}`);
       const newChat = response.data;
@@ -100,13 +117,19 @@ const ChatDetail = () => {
       
       setLoading(false);
     } catch (err) {
+      console.error('fetchChat 错误:', err);
       setError(err.message);
       setLoading(false);
     }
-  }, [sessionId, lastChatHash]);
+  }, [sessionId, lastChatHash, isNewChat]);
 
   // 启动定时刷新
   const startRefreshTimer = useCallback(() => {
+    // 如果是新建聊天页面，不启动定时刷新
+    if (isNewChat || sessionId === 'new') {
+      return;
+    }
+
     if (refreshTimerRef.current) {
       clearInterval(refreshTimerRef.current);
     }
@@ -119,7 +142,7 @@ const ChatDetail = () => {
         });
       }
     }, refreshInterval);
-  }, [refreshInterval, sending, fetchChat]);
+  }, [refreshInterval, sending, fetchChat, isNewChat, sessionId]);
 
   // 停止定时刷新
   const stopRefreshTimer = () => {
@@ -131,6 +154,12 @@ const ChatDetail = () => {
 
   // 手动刷新
   const handleManualRefresh = async () => {
+    // 如果是新建聊天页面，不执行手动刷新
+    if (isNewChat || sessionId === 'new') {
+      console.log('新建聊天页面，跳过手动刷新');
+      return;
+    }
+
     setIsRefreshing(true);
     await fetchChat();
     setIsRefreshing(false);
@@ -138,6 +167,40 @@ const ChatDetail = () => {
 
   // 检查Cursor状态
   const checkCursorStatus = useCallback(async () => {
+    // 如果是新建聊天页面，使用URL中的workspaceId
+    if (isNewChat && sessionId === 'new') {
+      if (!workspaceId) {
+        console.log('新建聊天页面缺少workspaceId，跳过状态检查');
+        return;
+      }
+      
+      try {
+        const response = await axios.get('/api/cursor-status', {
+          params: { workspace_id: workspaceId }
+        });
+        const status = response.data;
+        setCursorStatus({
+          isActive: status.isActive,
+          isDialogOpen: status.isDialogOpen,
+          lastCheck: Date.now()
+        });
+      } catch (err) {
+        console.error('检查Cursor状态失败:', err);
+        setCursorStatus(prev => ({
+          ...prev,
+          isActive: false,
+          isDialogOpen: false,
+          lastCheck: Date.now()
+        }));
+      }
+      return;
+    }
+    
+    // 现有聊天页面的状态检查
+    if (isNewChat || sessionId === 'new') {
+      return;
+    }
+
     try {
       const workspace_id = chat?.workspace_id;
       const response = await axios.get('/api/cursor-status', {
@@ -158,10 +221,32 @@ const ChatDetail = () => {
         lastCheck: Date.now()
       }));
     }
-  }, [chat?.workspace_id]);
+  }, [chat?.workspace_id, isNewChat, sessionId, workspaceId]);
 
   // 启动状态检查定时器
   const startStatusTimer = useCallback(() => {
+    // 如果是新建聊天页面，需要启动状态检查（使用URL中的workspaceId）
+    if (isNewChat && sessionId === 'new') {
+      if (!workspaceId) {
+        console.log('新建聊天页面缺少workspaceId，跳过状态检查定时器');
+        return;
+      }
+      
+      if (statusTimerRef.current) {
+        clearInterval(statusTimerRef.current);
+      }
+      
+      statusTimerRef.current = setInterval(() => {
+        checkCursorStatus();
+      }, statusCheckInterval);
+      return;
+    }
+    
+    // 现有聊天页面的状态检查
+    if (isNewChat || sessionId === 'new') {
+      return;
+    }
+
     if (statusTimerRef.current) {
       clearInterval(statusTimerRef.current);
     }
@@ -169,7 +254,7 @@ const ChatDetail = () => {
     statusTimerRef.current = setInterval(() => {
       checkCursorStatus();
     }, statusCheckInterval);
-  }, [statusCheckInterval, checkCursorStatus]);
+  }, [statusCheckInterval, checkCursorStatus, isNewChat, sessionId]);
 
   // 停止状态检查定时器
   const stopStatusTimer = () => {
@@ -179,8 +264,55 @@ const ChatDetail = () => {
     }
   };
 
+  // 检查是否为新建聊天页面
+  useEffect(() => {
+    console.log('检查sessionId:', sessionId, 'urlWorkspaceId:', urlWorkspaceId);
+    
+    if (sessionId === 'new' && urlWorkspaceId) {
+      console.log('设置为新建聊天页面，workspaceId:', urlWorkspaceId);
+      setIsNewChat(true);
+      setWorkspaceId(urlWorkspaceId);
+      setLoading(false);
+      setError(null);
+      // 新建聊天页面不需要获取聊天数据，也不需要定时刷新
+      return;
+    } else if (sessionId === 'new' && !urlWorkspaceId) {
+      console.log('新建聊天页面但缺少workspaceId，设置为错误状态');
+      setError('新建聊天页面缺少工作空间ID');
+      setLoading(false);
+      return;
+    } else if (!sessionId || sessionId === 'undefined' || sessionId === 'null') {
+      console.log('sessionId无效，设置为新建聊天页面');
+      setIsNewChat(true);
+      setLoading(false);
+      setError(null);
+      return;
+    } else {
+      console.log('设置为现有聊天页面，sessionId:', sessionId);
+      setIsNewChat(false);
+      setWorkspaceId(sessionId);
+    }
+  }, [sessionId, urlWorkspaceId]);
+
   // 初始化数据获取和定时刷新
   useEffect(() => {
+    console.log('useEffect 执行 - sessionId:', sessionId, 'isNewChat:', isNewChat);
+    
+    // 如果是新建聊天页面或sessionId为'new'，不执行数据获取
+    if (isNewChat || sessionId === 'new') {
+      console.log('新建聊天页面，跳过数据获取和定时器启动');
+      setLoading(false);
+      return;
+    }
+
+    // 确保sessionId不是undefined
+    if (!sessionId || sessionId === 'undefined') {
+      console.log('sessionId无效，跳过数据获取');
+      setLoading(false);
+      return;
+    }
+
+    console.log('开始初始化数据获取和定时刷新，sessionId:', sessionId);
     fetchChat();
     startRefreshTimer();
     startStatusTimer();
@@ -202,7 +334,7 @@ const ChatDetail = () => {
       stopRefreshTimer();
       stopStatusTimer();
     };
-  }, [sessionId, fetchChat, startRefreshTimer, startStatusTimer, checkCursorStatus]);
+  }, [sessionId, isNewChat, fetchChat, startRefreshTimer, startStatusTimer, checkCursorStatus]);
 
   // 当刷新间隔改变时，重启定时器
   useEffect(() => {
@@ -331,44 +463,49 @@ const ChatDetail = () => {
 
     setSending(true);
     try {
-      // 使用新的send-message接口
-      const payload = {
-        message: inputText.trim(),
-        workspace_id: chat?.workspace_id
-      };
+      if (isNewChat) {
+        // 新建聊天页面：先创建新对话，再发送消息
+        await handleCreateNewChat();
+      } else {
+        // 现有聊天页面：直接发送消息
+        const payload = {
+          message: inputText.trim(),
+          workspace_id: chat?.workspace_id
+        };
 
-      // 如果已经有session_id，则传递它
-      if (chat?.session?.composerId) {
-        payload.session_id = chat.session.composerId;
-      }
-
-      const response = await axios.post('/api/send-message', payload);
-
-      // 检查响应
-      if (response.data.success) {
-        console.log('消息发送成功');
-
-        // 如果返回了新的session_id，更新chat状态
-        if (response.data.session_id && !chat?.session?.composerId) {
-          console.log('收到新session_id:', response.data.session_id);
-          // 更新chat状态以包含新的session_id
-          setChat(prev => ({
-            ...prev,
-            session: {
-              ...prev.session,
-              composerId: response.data.session_id
-            }
-          }));
+        // 如果已经有session_id，则传递它
+        if (chat?.session?.composerId) {
+          payload.session_id = chat.session.composerId;
         }
 
-        setInputText('');
+        const response = await axios.post('/api/send-message', payload);
 
-        // 发送完成后，提高刷新频率到5秒
-        setRefreshInterval(5000);
-        // 同时提高状态检查频率到2秒
-        setStatusCheckInterval(2000);
-      } else {
-        throw new Error('发送消息失败');
+        // 检查响应
+        if (response.data.success) {
+          console.log('消息发送成功');
+
+          // 如果返回了新的session_id，更新chat状态
+          if (response.data.session_id && !chat?.session?.composerId) {
+            console.log('收到新session_id:', response.data.session_id);
+            // 更新chat状态以包含新的session_id
+            setChat(prev => ({
+              ...prev,
+              session: {
+                ...prev.session,
+                composerId: response.data.session_id
+              }
+            }));
+          }
+
+          setInputText('');
+
+          // 发送完成后，提高刷新频率到5秒
+          setRefreshInterval(5000);
+          // 同时提高状态检查频率到2秒
+          setStatusCheckInterval(2000);
+        } else {
+          throw new Error('发送消息失败');
+        }
       }
 
     } catch (err) {
@@ -393,10 +530,41 @@ const ChatDetail = () => {
 
     setSending(true);
     try {
+      // 获取当前工作空间信息
+      let currentWorkspaceId = workspaceId;
+      let currentRootPath = null;
+
+      // 如果是新建聊天页面，优先使用URL中的workspaceId
+      if (isNewChat) {
+        if (workspaceId) {
+          // 优先使用URL中的workspaceId
+          currentWorkspaceId = workspaceId;
+          // 从localStorage获取rootPath
+          const recentWorkspace = localStorage.getItem('recentWorkspace');
+          if (recentWorkspace) {
+            const workspaceData = JSON.parse(recentWorkspace);
+            currentRootPath = workspaceData.rootPath;
+          }
+        } else {
+          // 从localStorage获取最近的工作空间信息
+          const recentWorkspace = localStorage.getItem('recentWorkspace');
+          if (recentWorkspace) {
+            const workspaceData = JSON.parse(recentWorkspace);
+            currentWorkspaceId = workspaceData.workspace_id;
+            currentRootPath = workspaceData.rootPath;
+          } else {
+            throw new Error('无法获取工作空间信息，请从聊天列表页面重新开始');
+          }
+        }
+      } else {
+        currentWorkspaceId = chat?.workspace_id;
+        currentRootPath = chat?.project?.rootPath;
+      }
+
       // 第一步：创建新对话
       const createResponse = await axios.post('/api/create-new-chat', {
-        workspace_id: chat?.workspace_id,
-        rootPath: chat?.project?.rootPath
+        workspace_id: currentWorkspaceId,
+        rootPath: currentRootPath
       });
 
       if (createResponse.data.success) {
@@ -405,15 +573,39 @@ const ChatDetail = () => {
         // 第二步：发送第一条消息
         const messageResponse = await axios.post('/api/send-message', {
           message: inputText.trim(),
-          workspace_id: chat?.workspace_id
+          workspace_id: currentWorkspaceId
         });
 
-        if (messageResponse.data.success && messageResponse.data.session_id) {
-          console.log('消息发送成功，session_id:', messageResponse.data.session_id);
-          // 导航到新的对话页面，使用workspace_id
-          window.location.href = `/chat/${chat.workspace_id}`;
+        if (messageResponse.data.success) {
+          console.log('消息发送成功');
+          console.log('完整响应:', messageResponse.data);
+          
+          const sessionId = messageResponse.data.session_id;
+          if (sessionId) {
+            console.log('获得session_id:', sessionId);
+            
+            if (isNewChat) {
+              // 新建聊天页面：导航到新的对话页面
+              console.log('跳转到新对话页面:', `/chat/${sessionId}`);
+              window.location.href = `/chat/${sessionId}`;
+            } else {
+              // 现有聊天页面：导航到工作空间页面
+              window.location.href = `/chat/${currentWorkspaceId}`;
+            }
+          } else {
+            console.warn('没有获得session_id，响应数据:', messageResponse.data);
+            // 如果没有获得session_id，尝试轮询获取
+            if (isNewChat) {
+              console.log('开始轮询获取session_id...');
+              // 优先使用URL中的workspaceId，如果没有则使用currentWorkspaceId
+              const pollWorkspaceId = workspaceId || currentWorkspaceId;
+              pollForSessionId(pollWorkspaceId, inputText.trim());
+            } else {
+              setInputText('');
+            }
+          }
         } else {
-          console.warn('消息发送失败，但新对话已创建');
+          console.warn('消息发送失败，响应:', messageResponse.data);
           setInputText('');
         }
       } else {
@@ -434,6 +626,52 @@ const ChatDetail = () => {
     }
   };
 
+  // 轮询获取session_id
+  const pollForSessionId = async (workspaceId, messageContent, maxAttempts = 10) => {
+    console.log('开始轮询获取session_id，工作空间:', workspaceId, '消息:', messageContent);
+    
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        console.log(`第 ${attempt} 次尝试获取session_id...`);
+        
+        // 调用get_latest_session_id接口
+        const response = await axios.get('/api/latest-session', {
+          params: { workspace_id: workspaceId }
+        });
+        
+        if (response.data && response.data.session_id) {
+          console.log('轮询成功获得session_id:', response.data.session_id);
+          
+          // 检查是否包含我们发送的消息
+          const messages = response.data.messages || [];
+          const hasOurMessage = messages.some(msg => 
+            msg.role === 'user' && msg.content === messageContent
+          );
+          
+          if (hasOurMessage) {
+            console.log('找到匹配的消息，跳转到新对话页面');
+            window.location.href = `/chat/${response.data.session_id}`;
+            return;
+          } else {
+            console.log('未找到匹配的消息，继续轮询...');
+          }
+        }
+        
+        // 等待2秒后重试
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+      } catch (error) {
+        console.error(`第 ${attempt} 次轮询失败:`, error);
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+    }
+    
+    console.error('轮询超时，无法获取session_id');
+    alert('无法获取对话ID，请刷新页面重试');
+  };
+
   // 处理回车键发送
   const handleKeyPress = (event) => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -448,6 +686,7 @@ const ChatDetail = () => {
   };
 
   if (loading) {
+    console.log('ChatDetail: 显示加载状态');
     return (
       <Container sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '70vh' }}>
         <CircularProgress sx={{ color: colors.highlightColor }} />
@@ -456,6 +695,7 @@ const ChatDetail = () => {
   }
 
   if (error) {
+    console.log('ChatDetail: 显示错误状态:', error);
     return (
       <Container>
         <Typography variant="h5" color="error">
@@ -465,7 +705,8 @@ const ChatDetail = () => {
     );
   }
 
-  if (!chat) {
+  if (!chat && !isNewChat) {
+    console.log('ChatDetail: 显示聊天未找到状态');
     return (
       <Container>
         <Typography variant="h5">
@@ -475,24 +716,36 @@ const ChatDetail = () => {
     );
   }
 
-  // Format the date safely
-  let dateDisplay = 'Unknown date';
-  try {
-    if (chat.date) {
-      const dateObj = new Date(chat.date * 1000);
-      // Check if date is valid
-      if (!isNaN(dateObj.getTime())) {
-        dateDisplay = dateObj.toLocaleString();
+  // 准备渲染数据
+  let messages, projectName, dateDisplay;
+
+  if (isNewChat) {
+    // 新建聊天页面使用默认值
+    messages = [];
+    projectName = 'New Chat';
+    dateDisplay = 'New';
+  } else {
+    // 现有聊天页面使用实际数据
+    // Format the date safely
+    dateDisplay = 'Unknown date';
+    try {
+      if (chat.date) {
+        const dateObj = new Date(chat.date * 1000);
+        // Check if date is valid
+        if (!isNaN(dateObj.getTime())) {
+          dateDisplay = dateObj.toLocaleString();
+        }
       }
+    } catch (err) {
+      console.error('Error formatting date:', err);
     }
-  } catch (err) {
-    console.error('Error formatting date:', err);
+
+    // Ensure messages exist
+    messages = Array.isArray(chat.messages) ? chat.messages : [];
+    projectName = chat.project?.name || 'Unknown Project';
   }
 
-  // Ensure messages exist
-  const messages = Array.isArray(chat.messages) ? chat.messages : [];
-  const projectName = chat.project?.name || 'Unknown Project';
-
+  console.log('ChatDetail: 开始渲染主要内容，isNewChat:', isNewChat, 'sessionId:', sessionId);
   return (
     <Container sx={{ mb: 6 }}>
       {/* Format Selection Dialog */}
@@ -581,61 +834,66 @@ const ChatDetail = () => {
         </Button>
         
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-          {/* 刷新状态指示器 */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            {isRefreshing && (
-              <CircularProgress size={16} sx={{ color: colors.highlightColor }} />
-            )}
-            <Typography variant="caption" color="text.secondary">
-              {refreshInterval < 30000 ? '高频刷新中' : '自动刷新'}
-            </Typography>
-          </Box>
-          
-          {/* 手动刷新按钮 */}
-          <IconButton
-            onClick={handleManualRefresh}
-            disabled={isRefreshing}
-            size="small"
-            sx={{
-              color: colors.highlightColor,
-              '&:hover': {
-                backgroundColor: alpha(colors.highlightColor, 0.1),
-              }
-            }}
-          >
-            <RefreshIcon />
-          </IconButton>
-          
-          <Button
-            onClick={handleExport}
-            startIcon={<FileDownloadIcon />}
-            variant="contained"
-            color="highlight"
-            sx={{ 
-              borderRadius: 2,
-              position: 'relative',
-              '&:hover': {
-                backgroundColor: alpha(colors.highlightColor, 0.8),
-              },
-              '&::after': dontShowExportWarning ? null : {
-                content: '""',
-                position: 'absolute',
-                borderRadius: '50%',
-                top: '4px',
-                right: '4px',
-                width: '8px', // Adjusted size for button
-                height: '8px' // Adjusted size for button
-              },
-              // Conditionally add the background color if the warning should be shown
-              ...( !dontShowExportWarning && {
-                '&::after': { 
-                  backgroundColor: 'warning.main'
-                }
-              })
-            }}
-          >
-            Export
-          </Button>
+          {/* 新建聊天页面不显示刷新和导出功能 */}
+          {!isNewChat && (
+            <>
+              {/* 刷新状态指示器 */}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                {isRefreshing && (
+                  <CircularProgress size={16} sx={{ color: colors.highlightColor }} />
+                )}
+                <Typography variant="caption" color="text.secondary">
+                  {refreshInterval < 30000 ? '高频刷新中' : '自动刷新'}
+                </Typography>
+              </Box>
+              
+              {/* 手动刷新按钮 */}
+              <IconButton
+                onClick={handleManualRefresh}
+                disabled={isRefreshing}
+                size="small"
+                sx={{
+                  color: colors.highlightColor,
+                  '&:hover': {
+                    backgroundColor: alpha(colors.highlightColor, 0.1),
+                  }
+                }}
+              >
+                <RefreshIcon />
+              </IconButton>
+              
+              <Button
+                onClick={handleExport}
+                startIcon={<FileDownloadIcon />}
+                variant="contained"
+                color="highlight"
+                sx={{ 
+                  borderRadius: 2,
+                  position: 'relative',
+                  '&:hover': {
+                    backgroundColor: alpha(colors.highlightColor, 0.8),
+                  },
+                  '&::after': dontShowExportWarning ? null : {
+                    content: '""',
+                    position: 'absolute',
+                    borderRadius: '50%',
+                    top: '4px',
+                    right: '4px',
+                    width: '8px', // Adjusted size for button
+                    height: '8px' // Adjusted size for button
+                  },
+                  // Conditionally add the background color if the warning should be shown
+                  ...( !dontShowExportWarning && {
+                    '&::after': { 
+                      backgroundColor: 'warning.main'
+                    }
+                  })
+                }}
+              >
+                Export
+              </Button>
+            </>
+          )}
         </Box>
       </Box>
 
@@ -672,73 +930,86 @@ const ChatDetail = () => {
           </Box>
         </Box>
         
-        <Box sx={{ px: 3, py: 1.5 }}>
-          <Box sx={{ 
-            display: 'flex', 
-            flexWrap: 'wrap', 
-            gap: 2,
-            alignItems: 'center'
-          }}>
-            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              <AccountTreeIcon sx={{ mr: 0.5, color: colors.highlightColor, opacity: 0.8, fontSize: 18 }} />
-              <Typography variant="body2" color="text.secondary">
-                <strong>Path:</strong> {chat.project?.rootPath || 'Unknown location'}
-              </Typography>
-            </Box>
-            
-            {/* Cursor状态指示器 */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Box sx={{ 
-                width: 8, 
-                height: 8, 
-                borderRadius: '50%', 
-                backgroundColor: cursorStatus.isActive ? 'success.main' : 'error.main',
-                mr: 0.5 
-              }} />
-              <Typography variant="body2" color="text.secondary">
-                <strong>Cursor:</strong> {cursorStatus.isActive ? '已激活' : '未激活'}
-              </Typography>
-            </Box>
-            
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Box sx={{ 
-                width: 8, 
-                height: 8, 
-                borderRadius: '50%', 
-                backgroundColor: cursorStatus.isDialogOpen ? 'success.main' : 'warning.main',
-                mr: 0.5 
-              }} />
-              <Typography variant="body2" color="text.secondary">
-                <strong>AI对话框:</strong> {cursorStatus.isDialogOpen ? '已打开' : '未打开'}
-              </Typography>
-            </Box>
-            
-            {chat.workspace_id && (
+        {!isNewChat && (
+          <Box sx={{ px: 3, py: 1.5 }}>
+            <Box sx={{ 
+              display: 'flex', 
+              flexWrap: 'wrap', 
+              gap: 2,
+              alignItems: 'center'
+            }}>
               <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                <StorageIcon sx={{ mr: 0.5, color: colors.highlightColor, opacity: 0.8, fontSize: 18 }} />
+                <AccountTreeIcon sx={{ mr: 0.5, color: colors.highlightColor, opacity: 0.8, fontSize: 18 }} />
                 <Typography variant="body2" color="text.secondary">
-                  <strong>Workspace:</strong> {chat.workspace_id}
+                  <strong>Path:</strong> {chat.project?.rootPath || 'Unknown location'}
                 </Typography>
               </Box>
-            )}
-            
-            {chat.db_path && (
-              <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                <DataObjectIcon sx={{ mr: 0.5, color: colors.highlightColor, opacity: 0.8, fontSize: 18 }} />
-                <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-all' }}>
-                  <strong>DB:</strong> {chat.db_path.split('/').pop()}
+              
+              {/* Cursor状态指示器 */}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Box sx={{ 
+                  width: 8, 
+                  height: 8, 
+                  borderRadius: '50%', 
+                  backgroundColor: cursorStatus.isActive ? 'success.main' : 'error.main',
+                  mr: 0.5 
+                }} />
+                <Typography variant="body2" color="text.secondary">
+                  <strong>Cursor:</strong> {cursorStatus.isActive ? '已激活' : '未激活'}
                 </Typography>
               </Box>
-            )}
+              
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Box sx={{ 
+                  width: 8, 
+                  height: 8, 
+                  borderRadius: '50%', 
+                  backgroundColor: cursorStatus.isDialogOpen ? 'success.main' : 'warning.main',
+                  mr: 0.5 
+                }} />
+                <Typography variant="body2" color="text.secondary">
+                  <strong>AI对话框:</strong> {cursorStatus.isDialogOpen ? '已打开' : '未打开'}
+                </Typography>
+              </Box>
+              
+              {chat.workspace_id && (
+                <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                  <StorageIcon sx={{ mr: 0.5, color: colors.highlightColor, opacity: 0.8, fontSize: 18 }} />
+                  <Typography variant="body2" color="text.secondary">
+                    <strong>Workspace:</strong> {chat.workspace_id}
+                  </Typography>
+                </Box>
+              )}
+              
+              {chat.db_path && (
+                <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                  <DataObjectIcon sx={{ mr: 0.5, color: colors.highlightColor, opacity: 0.8, fontSize: 18 }} />
+                  <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-all' }}>
+                    <strong>DB:</strong> {chat.db_path.split('/').pop()}
+                  </Typography>
+                </Box>
+              )}
+            </Box>
           </Box>
-        </Box>
+        )}
       </Paper>
 
-      <Typography variant="h5" gutterBottom fontWeight="600" sx={{ mt: 4, mb: 3 }}>
-        Conversation History
-      </Typography>
+      {!isNewChat && (
+        <Typography variant="h5" gutterBottom fontWeight="600" sx={{ mt: 4, mb: 3 }}>
+          Conversation History
+        </Typography>
+      )}
 
-      {messages.length === 0 ? (
+      {isNewChat ? (
+        <Paper sx={{ p: 4, textAlign: 'center', borderRadius: 3, mt: 4 }}>
+          <Typography variant="h6" gutterBottom color="text.primary">
+            新建对话
+          </Typography>
+          <Typography variant="body1" color="text.secondary">
+            请输入您的第一条消息来开始新的对话
+          </Typography>
+        </Paper>
+      ) : messages.length === 0 ? (
         <Paper sx={{ p: 4, textAlign: 'center', borderRadius: 3 }}>
           <Typography variant="body1">
             No messages found in this conversation.
@@ -846,7 +1117,7 @@ const ChatDetail = () => {
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="输入消息发送到Cursor... (Shift+Enter创建新对话)"
+              placeholder={isNewChat ? "输入消息开始新对话..." : "输入消息发送到Cursor... (Shift+Enter创建新对话)"}
               variant="outlined"
               size="small"
               disabled={sending}
@@ -875,25 +1146,27 @@ const ChatDetail = () => {
             >
               <SendIcon />
             </IconButton>
-            <IconButton
-              onClick={handleCreateNewChat}
-              disabled={!inputText.trim() || sending}
-              color="secondary"
-              sx={{
-                bgcolor: colors.secondary.main,
-                color: 'white',
-                '&:hover': {
-                  bgcolor: alpha(colors.secondary.main, 0.8),
-                },
-                '&:disabled': {
-                  bgcolor: 'action.disabled',
-                  color: 'action.disabled'
-                }
-              }}
-              title="创建新对话并发送"
-            >
-              <AddIcon />
-            </IconButton>
+            {!isNewChat && (
+              <IconButton
+                onClick={handleCreateNewChat}
+                disabled={!inputText.trim() || sending}
+                color="secondary"
+                sx={{
+                  bgcolor: colors.secondary.main,
+                  color: 'white',
+                  '&:hover': {
+                    bgcolor: alpha(colors.secondary.main, 0.8),
+                  },
+                  '&:disabled': {
+                    bgcolor: 'action.disabled',
+                    color: 'action.disabled'
+                  }
+                }}
+                title="创建新对话并发送"
+              >
+                <AddIcon />
+              </IconButton>
+            )}
           </Box>
         </Container>
       </Paper>
