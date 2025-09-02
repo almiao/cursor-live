@@ -561,65 +561,53 @@ const ChatDetail = () => {
         currentRootPath = chat?.project?.rootPath;
       }
 
-      // 第一步：创建新对话
-      const createResponse = await axios.post('/api/create-new-chat', {
-        workspace_id: currentWorkspaceId,
-        rootPath: currentRootPath
+      // 直接发送消息到当前对话
+      const messageResponse = await axios.post('/api/send-message', {
+        message: inputText.trim(),
+        workspace_id: currentWorkspaceId
       });
 
-      if (createResponse.data.success) {
-        console.log('新对话创建成功');
-
-        // 第二步：发送第一条消息
-        const messageResponse = await axios.post('/api/send-message', {
-          message: inputText.trim(),
-          workspace_id: currentWorkspaceId
-        });
-
-        if (messageResponse.data.success) {
-          console.log('消息发送成功');
-          console.log('完整响应:', messageResponse.data);
+      if (messageResponse.data.success) {
+        console.log('消息发送成功');
+        console.log('完整响应:', messageResponse.data);
+        
+        const sessionId = messageResponse.data.session_id;
+        if (sessionId) {
+          console.log('获得session_id:', sessionId);
           
-          const sessionId = messageResponse.data.session_id;
-          if (sessionId) {
-            console.log('获得session_id:', sessionId);
-            
-            if (isNewChat) {
-              // 新建聊天页面：导航到新的对话页面
-              console.log('跳转到新对话页面:', `/chat/${sessionId}`);
-              window.location.href = `/chat/${sessionId}`;
-            } else {
-              // 现有聊天页面：导航到工作空间页面
-              window.location.href = `/chat/${currentWorkspaceId}`;
-            }
+          if (isNewChat) {
+            // 新建聊天页面：导航到新的对话页面
+            console.log('跳转到新对话页面:', `/chat/${sessionId}`);
+            window.location.href = `/chat/${sessionId}`;
           } else {
-            console.warn('没有获得session_id，响应数据:', messageResponse.data);
-            // 如果没有获得session_id，尝试轮询获取
-            if (isNewChat) {
-              console.log('开始轮询获取session_id...');
-              // 优先使用URL中的workspaceId，如果没有则使用currentWorkspaceId
-              const pollWorkspaceId = workspaceId || currentWorkspaceId;
-              pollForSessionId(pollWorkspaceId, inputText.trim());
-            } else {
-              setInputText('');
-            }
+            // 现有聊天页面：导航到工作空间页面
+            window.location.href = `/chat/${currentWorkspaceId}`;
           }
         } else {
-          console.warn('消息发送失败，响应:', messageResponse.data);
-          setInputText('');
+          console.warn('没有获得session_id，响应数据:', messageResponse.data);
+          // 如果没有获得session_id，尝试轮询获取
+          if (isNewChat) {
+            console.log('开始轮询获取session_id...');
+            // 优先使用URL中的workspaceId，如果没有则使用currentWorkspaceId
+            const pollWorkspaceId = workspaceId || currentWorkspaceId;
+            pollForSessionId(pollWorkspaceId, inputText.trim());
+          } else {
+            setInputText('');
+          }
         }
       } else {
-        throw new Error('创建新对话失败');
+        console.warn('消息发送失败，响应:', messageResponse.data);
+        setInputText('');
       }
 
     } catch (err) {
-      console.error('创建新对话失败:', err);
+      console.error('发送消息失败:', err);
 
       // 检查是否是废弃接口的错误
       if (err.response?.status === 410) {
         alert('API接口已更新，请刷新页面重试');
       } else {
-        alert('创建新对话失败，请检查后端服务是否正常运行');
+        alert('发送消息失败，请检查后端服务是否正常运行');
       }
     } finally {
       setSending(false);

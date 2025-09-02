@@ -179,7 +179,7 @@ class CursorAutomation:
                         auxiliary_bar_hidden = j(cur, "ItemTable", "workbench.auxiliaryBar.hidden")
                         
                         # 如果值为None，默认认为侧边栏是隐藏的
-                        is_hidden = auxiliary_bar_hidden if auxiliary_bar_hidden is not None else True
+                        is_hidden = auxiliary_bar_hidden
                         
                         if not is_hidden:
                             logger.info("检测到AI侧边栏已打开")
@@ -368,23 +368,25 @@ class CursorAutomation:
             workspace_id: 工作空间ID，用于检测对话框状态
         """
         try:
-            # 检测当前对话框状态
-            current_state = self.detect_dialog_state(workspace_id)
-            if current_state == 'dialogue':
-                logger.info("对话框已经打开，无需重复打开")
-                return True
-            
-            # 发送快捷键：Command/Ctrl + I（打开聊天对话框）
-            pyautogui.hotkey(self.modifier, 'i')
-            logger.info("已发送快捷键 Command+I 打开聊天对话框")
-            
-            # 等待对话框打开并验证
-            if workspace_id and self.wait_for_dialog_state('dialogue', workspace_id, timeout=5):
-                logger.info("对话框打开成功")
+            if workspace_id:
+                # 发送命令前先检测并记录当前状态
+                initial_state = self.detect_dialog_state(workspace_id)
+                logger.info(f"发送Command+I前的对话框状态: {initial_state}")
+
+                if initial_state == "dialogue":
+                    logger.info("当前已是对话框，无需操作")
+                    return True
+
+                # 发送快捷键：Command/Ctrl + I（打开聊天对话框）
+                pyautogui.hotkey(self.modifier, 'i')
+                logger.info("已发送快捷键 Command+I 打开聊天对话框")
                 return True
             else:
-                logger.warning("对话框打开可能未成功")
-                return False
+                # 如果没有workspace_id，直接发送命令并等待1秒
+                pyautogui.hotkey(self.modifier, 'i')
+                logger.info("已发送快捷键 Command+I 打开聊天对话框（无workspace_id，跳过状态检测）")
+                time.sleep(1)
+                return True
             
         except Exception as e:
             logger.error(f"打开聊天对话框失败: {e}")
@@ -397,15 +399,6 @@ class CursorAutomation:
             workspace_id: 工作空间ID，用于检测对话框状态
         """
         try:
-            # 检查对话框是否已打开
-            current_state = self.detect_dialog_state(workspace_id)
-            if current_state != 'dialogue':
-                logger.warning("对话框未打开，无法创建新对话，先打开对话框")
-                # 先打开对话框
-                if not self.open_chat_dialog(workspace_id):
-                    logger.error("无法打开对话框，无法创建新对话")
-                    return False
-            
             # 发送快捷键：Command/Ctrl + T（在对话框中创建新对话）
             pyautogui.hotkey(self.modifier, 't')
             logger.info("已发送快捷键 Command+T 在对话框中创建新对话")
@@ -623,6 +616,8 @@ class CursorAutomation:
                 tell application "Terminal"
                     activate
                     do script "cursor '{root_path}'"
+                    delay 3
+                    quit
                 end tell
                 '''
                 result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)

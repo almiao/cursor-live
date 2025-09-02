@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { AppBar, Toolbar, Typography, Box, Container, Button, Chip, Tooltip } from '@mui/material';
 import ChatIcon from '@mui/icons-material/Chat';
 import GitHubIcon from '@mui/icons-material/GitHub';
-import BugReportIcon from '@mui/icons-material/BugReport';
+
 import WifiIcon from '@mui/icons-material/Wifi';
 import { colors } from '../App';
 
@@ -68,25 +68,7 @@ const Header = () => {
             </Box>
           )}
           
-          <Button 
-            component={Link}
-            to="/cursor-debug"
-            startIcon={<BugReportIcon />}
-            variant="outlined"
-            color="inherit"
-            size="small"
-            sx={{ 
-              borderColor: 'rgba(255,255,255,0.5)', 
-              color: 'white',
-              mr: 2,
-              '&:hover': { 
-                borderColor: 'rgba(255,255,255,0.8)',
-                backgroundColor: colors.highlightColor
-              }
-            }}
-          >
-            Cursor调试
-          </Button>
+
           
           <Button 
             component="a"

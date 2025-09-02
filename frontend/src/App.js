@@ -6,7 +6,7 @@ import CssBaseline from '@mui/material/CssBaseline';
 import ChatList from './components/ChatList';
 import ChatDetail from './components/ChatDetail';
 import Header from './components/Header';
-import CursorDebug from './components/CursorDebug';
+
 
 // Define our color palette centrally - using rich, modern colors
 const colors = {
@@ -167,7 +167,7 @@ function App() {
           <Route path="/" element={<ChatList />} />
           <Route path="/chat/new/:workspaceId" element={<ChatDetail />} />
           <Route path="/chat/:sessionId" element={<ChatDetail />} />
-          <Route path="/cursor-debug" element={<CursorDebug />} />
+
         </Routes>
       </Router>
     </ThemeProvider>
