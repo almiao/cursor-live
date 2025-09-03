@@ -1351,6 +1351,53 @@ def close_cursor_dialog():
             "message": "关闭AI对话框时发生错误"
         }), 500
 
+@app.route('/api/cursor/dialog/toggle', methods=['POST'])
+def toggle_cursor_dialog():
+    """切换Cursor AI对话框状态（打开/关闭）"""
+    try:
+        import sys
+        import os
+        
+        # 添加当前目录到Python路径
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        
+        from pyautogu import CursorAutomation
+        
+        # 获取请求数据
+        data = request.get_json() or {}
+        workspace_id = data.get('workspace_id')
+        
+        logger.info(f"Toggling Cursor dialog for workspace: {workspace_id}")
+        
+        # 创建自动化实例
+        automator = CursorAutomation()
+        
+        # 尝试打开聊天对话框
+        success = automator.open_chat_dialog(workspace_id)
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "AI对话框状态已切换",
+                "action": "opened"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "无法切换AI对话框状态",
+                "message": "请确保Cursor正在运行且可访问"
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"Error in toggle_cursor_dialog: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "message": "切换AI对话框状态时发生错误"
+        }), 500
+
 @app.route('/api/cursor/sidebar/status', methods=['GET'])
 def get_sidebar_status():
     """检测AI侧边栏状态"""

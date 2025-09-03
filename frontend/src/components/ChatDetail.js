@@ -24,6 +24,7 @@ import {
   FormControl,
   TextField,
   IconButton,
+  Tooltip,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import FolderIcon from '@mui/icons-material/Folder';
@@ -38,6 +39,7 @@ import WarningIcon from '@mui/icons-material/Warning';
 import SendIcon from '@mui/icons-material/Send';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import AddIcon from '@mui/icons-material/Add';
+import ChatIcon from '@mui/icons-material/Chat'; // Added ChatIcon import
 import { colors } from '../App';
 
 const ChatDetail = () => {
@@ -70,6 +72,9 @@ const ChatDetail = () => {
   });
   const [statusCheckInterval, setStatusCheckInterval] = useState(5000); // 5秒检查一次状态
   const statusTimerRef = useRef(null);
+
+  // 切换对话框状态
+  const [isTogglingDialog, setIsTogglingDialog] = useState(false);
 
   // 计算聊天内容的哈希值，用于检测变化
   const calculateChatHash = (chatData) => {
@@ -264,12 +269,63 @@ const ChatDetail = () => {
     }
   };
 
+  // 切换对话框状态
+  const handleToggleDialog = async () => {
+    console.log('=== 开始切换对话框 ===');
+    console.log('isNewChat:', isNewChat);
+    console.log('workspaceId:', workspaceId);
+    console.log('chat?.workspace_id:', chat?.workspace_id);
+    
+    try {
+      setIsTogglingDialog(true);
+      
+      // 获取当前工作空间ID
+      const currentWorkspaceId = isNewChat ? workspaceId : chat?.workspace_id;
+      console.log('当前工作空间ID:', currentWorkspaceId);
+      
+      if (!currentWorkspaceId) {
+        console.error('无法获取工作空间ID');
+        alert('无法获取工作空间ID，请检查页面状态');
+        return;
+      }
+      
+      console.log('准备发送请求到 /api/cursor/dialog/toggle');
+      console.log('请求数据:', { workspace_id: currentWorkspaceId });
+      
+      const response = await axios.post('/api/cursor/dialog/toggle', {
+        workspace_id: currentWorkspaceId
+      });
+      
+      console.log('收到响应:', response);
+      
+      if (response.data.success) {
+        console.log('对话框状态切换成功:', response.data.message);
+        
+        // 更新Cursor状态
+        await checkCursorStatus();
+      } else {
+        console.error('对话框状态切换失败:', response.data.error);
+      }
+    } catch (error) {
+      console.error('切换对话框状态时发生错误:', error);
+      console.error('错误详情:', error.response?.data || error.message);
+      alert(`切换对话框失败: ${error.message}`);
+    } finally {
+      setIsTogglingDialog(false);
+      console.log('=== 切换对话框完成 ===');
+    }
+  };
+
   // 检查是否为新建聊天页面
   useEffect(() => {
-    console.log('检查sessionId:', sessionId, 'urlWorkspaceId:', urlWorkspaceId);
+    console.log('=== 检查页面类型 ===');
+    console.log('sessionId:', sessionId);
+    console.log('urlWorkspaceId:', urlWorkspaceId);
+    console.log('当前URL:', window.location.href);
+    console.log('当前路径:', window.location.pathname);
     
     if (sessionId === 'new' && urlWorkspaceId) {
-      console.log('设置为新建聊天页面，workspaceId:', urlWorkspaceId);
+      console.log('✅ 设置为新建聊天页面，workspaceId:', urlWorkspaceId);
       setIsNewChat(true);
       setWorkspaceId(urlWorkspaceId);
       setLoading(false);
@@ -277,18 +333,39 @@ const ChatDetail = () => {
       // 新建聊天页面不需要获取聊天数据，也不需要定时刷新
       return;
     } else if (sessionId === 'new' && !urlWorkspaceId) {
-      console.log('新建聊天页面但缺少workspaceId，设置为错误状态');
+      console.log('❌ 新建聊天页面但缺少workspaceId');
+      console.log('尝试从URL路径中提取workspaceId...');
+      
+      // 尝试从URL路径中提取workspaceId
+      const pathParts = window.location.pathname.split('/');
+      console.log('路径部分:', pathParts);
+      
+      if (pathParts.length >= 4 && pathParts[1] === 'chat' && pathParts[2] === 'new') {
+        const extractedWorkspaceId = pathParts[3];
+        console.log('从URL路径提取到workspaceId:', extractedWorkspaceId);
+        
+        if (extractedWorkspaceId && extractedWorkspaceId !== 'undefined') {
+          console.log('✅ 使用提取的workspaceId:', extractedWorkspaceId);
+          setIsNewChat(true);
+          setWorkspaceId(extractedWorkspaceId);
+          setLoading(false);
+          setError(null);
+          return;
+        }
+      }
+      
+      console.log('❌ 无法从URL提取workspaceId，设置为错误状态');
       setError('新建聊天页面缺少工作空间ID');
       setLoading(false);
       return;
     } else if (!sessionId || sessionId === 'undefined' || sessionId === 'null') {
-      console.log('sessionId无效，设置为新建聊天页面');
+      console.log('⚠️ sessionId无效，设置为新建聊天页面');
       setIsNewChat(true);
       setLoading(false);
       setError(null);
       return;
     } else {
-      console.log('设置为现有聊天页面，sessionId:', sessionId);
+      console.log('✅ 设置为现有聊天页面，sessionId:', sessionId);
       setIsNewChat(false);
       setWorkspaceId(sessionId);
     }
@@ -892,6 +969,61 @@ const ChatDetail = () => {
               </Button>
             </>
           )}
+          {/* 切换对话框按钮 - 在所有页面都显示 */}
+          <Tooltip title="切换AI对话框 (Command+I)">
+            <Button
+              onClick={() => {
+                console.log('=== 按钮点击事件 ===');
+                console.log('按钮被点击了！');
+                console.log('当前状态:', { 
+                  isNewChat, 
+                  workspaceId, 
+                  chatWorkspaceId: chat?.workspace_id,
+                  sessionId,
+                  urlWorkspaceId
+                });
+                console.log('当前URL:', window.location.href);
+                console.log('当前路径:', window.location.pathname);
+                
+                // 如果workspaceId为空，尝试从URL提取
+                if (!workspaceId && window.location.pathname.includes('/chat/new/')) {
+                  const pathParts = window.location.pathname.split('/');
+                  if (pathParts.length >= 4) {
+                    const extractedWorkspaceId = pathParts[3];
+                    console.log('从URL提取workspaceId:', extractedWorkspaceId);
+                    if (extractedWorkspaceId && extractedWorkspaceId !== 'undefined') {
+                      console.log('临时设置workspaceId:', extractedWorkspaceId);
+                      setWorkspaceId(extractedWorkspaceId);
+                      // 等待状态更新后再调用
+                      setTimeout(() => handleToggleDialog(), 100);
+                      return;
+                    }
+                  }
+                }
+                
+                handleToggleDialog();
+              }}
+              disabled={isTogglingDialog}
+              startIcon={isTogglingDialog ? <CircularProgress size={16} /> : <ChatIcon />}
+              variant="outlined"
+              color="highlight"
+              sx={{ 
+                borderRadius: 2,
+                borderColor: colors.highlightColor,
+                color: colors.highlightColor,
+                '&:hover': {
+                  backgroundColor: alpha(colors.highlightColor, 0.1),
+                  borderColor: colors.highlightColor,
+                },
+                '&:disabled': {
+                  borderColor: alpha(colors.highlightColor, 0.3),
+                  color: alpha(colors.highlightColor, 0.3),
+                }
+              }}
+            >
+              {isTogglingDialog ? '切换中...' : '切换对话框'}
+            </Button>
+          </Tooltip>
         </Box>
       </Box>
 

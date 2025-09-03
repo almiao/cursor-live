@@ -368,6 +368,14 @@ class CursorAutomation:
             workspace_id: 工作空间ID，用于检测对话框状态
         """
         try:
+            # 首先确保Cursor是活动窗口
+            logger.info("确保Cursor是活动窗口...")
+            if not self.activate_cursor():
+                logger.warning("无法激活Cursor窗口，但继续尝试发送快捷键")
+            
+            pyautogui.hotkey(self.modifier, 'i')
+            logger.info("command+I完成")
+            
             if workspace_id:
                 # 发送命令前先检测并记录当前状态
                 initial_state = self.detect_dialog_state(workspace_id)
@@ -376,20 +384,161 @@ class CursorAutomation:
                 if initial_state == "dialogue":
                     logger.info("当前已是对话框，无需操作")
                     return True
-
-                # 发送快捷键：Command/Ctrl + I（打开聊天对话框）
-                pyautogui.hotkey(self.modifier, 'i')
-                logger.info("已发送快捷键 Command+I 打开聊天对话框")
-                return True
+                
+                # 增加等待时间，确保界面稳定
+                logger.info("等待界面稳定...")
+                time.sleep(3)
+                
+                # 尝试多种方式发送快捷键
+                success = False
+                
+                # # 方法1: 使用pyautogui.hotkey
+                # try:
+                #     logger.info(f"尝试方法1: 使用 {self.modifier}+i 快捷键")
+                #     pyautogui.hotkey(self.modifier, 'i')
+                #     logger.info(f"已发送快捷键 {self.modifier}+i 打开聊天对话框")
+                #     success = True
+                # except Exception as e:
+                #     logger.warning(f"方法1失败: {e}")
+                
+                # 方法2: 如果方法1失败，尝试使用press
+                if not success:
+                    try:
+                        logger.info("尝试方法2: 使用press方法")
+                        if self.system == 'Darwin':
+                            pyautogui.keyDown('command')
+                            pyautogui.press('i')
+                            pyautogui.keyUp('command')
+                        else:
+                            pyautogui.keyDown('ctrl')
+                            pyautogui.press('i')
+                            pyautogui.keyUp('ctrl')
+                        logger.info("已通过press方法发送快捷键")
+                        success = True
+                    except Exception as e:
+                        logger.warning(f"方法2失败: {e}")
+                
+                # 方法3: 如果都失败，尝试使用typewrite
+                if not success:
+                    try:
+                        logger.info("尝试方法3: 使用typewrite方法")
+                        if self.system == 'Darwin':
+                            pyautogui.typewrite(['i'], interval=0.1)
+                        else:
+                            pyautogui.typewrite(['i'], interval=0.1)
+                        logger.info("已通过typewrite方法发送快捷键")
+                        success = True
+                    except Exception as e:
+                        logger.warning(f"方法3失败: {e}")
+                
+                if success:
+                    # 等待对话框打开
+                    logger.info("等待对话框打开...")
+                    time.sleep(2)
+                    
+                    # 验证对话框是否真的打开了
+                    final_state = self.detect_dialog_state(workspace_id)
+                    logger.info(f"发送快捷键后的对话框状态: {final_state}")
+                    
+                    if final_state == "dialogue":
+                        logger.info("对话框打开成功！")
+                        return True
+                    else:
+                        logger.warning("快捷键发送成功，但对话框状态未改变")
+                        return False
+                else:
+                    logger.error("所有快捷键发送方法都失败了")
+                    return False
             else:
                 # 如果没有workspace_id，直接发送命令并等待1秒
+                logger.info("无workspace_id，直接发送快捷键")
                 pyautogui.hotkey(self.modifier, 'i')
-                logger.info("已发送快捷键 Command+I 打开聊天对话框（无workspace_id，跳过状态检测）")
-                time.sleep(1)
+                logger.info(f"已发送快捷键 {self.modifier}+i 打开聊天对话框（无workspace_id，跳过状态检测）")
+                time.sleep(2)
                 return True
             
         except Exception as e:
             logger.error(f"打开聊天对话框失败: {e}")
+            return False
+
+    def test_hotkey(self, key_combination: str = None) -> bool:
+        """测试快捷键是否工作（用于调试）
+        
+        Args:
+            key_combination: 要测试的快捷键组合，如 'command+i' 或 'ctrl+i'
+            
+        Returns:
+            bool: 是否成功发送快捷键
+        """
+        try:
+            logger.info("=== 开始快捷键测试 ===")
+            
+            # 确保Cursor是活动窗口
+            logger.info("确保Cursor是活动窗口...")
+            if not self.activate_cursor():
+                logger.warning("无法激活Cursor窗口")
+                return False
+            
+            # 等待窗口稳定
+            time.sleep(2)
+            
+            if key_combination:
+                # 测试指定的快捷键组合
+                logger.info(f"测试指定快捷键: {key_combination}")
+                try:
+                    if '+' in key_combination:
+                        keys = key_combination.split('+')
+                        pyautogui.hotkey(*keys)
+                        logger.info(f"成功发送快捷键: {key_combination}")
+                    else:
+                        pyautogui.press(key_combination)
+                        logger.info(f"成功发送按键: {key_combination}")
+                    return True
+                except Exception as e:
+                    logger.error(f"发送快捷键失败: {e}")
+                    return False
+            else:
+                # 测试默认的 Command+I 快捷键
+                logger.info("测试默认快捷键: Command+I")
+                
+                # 方法1: hotkey
+                try:
+                    pyautogui.hotkey(self.modifier, 'i')
+                    logger.info(f"方法1成功: {self.modifier}+i")
+                    return True
+                except Exception as e:
+                    logger.warning(f"方法1失败: {e}")
+                
+                # 方法2: keyDown/keyUp
+                try:
+                    if self.system == 'Darwin':
+                        pyautogui.keyDown('command')
+                        pyautogui.press('i')
+                        pyautogui.keyUp('command')
+                        logger.info("方法2成功: keyDown/keyUp")
+                        return True
+                    else:
+                        pyautogui.keyDown('ctrl')
+                        pyautogui.press('i')
+                        pyautogui.keyUp('ctrl')
+                        logger.info("方法2成功: keyDown/keyUp")
+                        return True
+                except Exception as e:
+                    logger.warning(f"方法2失败: {e}")
+                
+                # 方法3: typewrite
+                try:
+                    pyautogui.typewrite(['i'], interval=0.1)
+                    logger.info("方法3成功: typewrite")
+                    return True
+                except Exception as e:
+                    logger.warning(f"方法3失败: {e}")
+                
+                logger.error("所有快捷键测试方法都失败了")
+                return False
+                
+        except Exception as e:
+            logger.error(f"快捷键测试失败: {e}")
             return False
 
     def create_new_chat(self, workspace_id: str = None) -> bool:
