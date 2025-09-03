@@ -13,6 +13,7 @@ import platform
 import sqlite3
 import argparse
 import pathlib
+import traceback
 from collections import defaultdict
 from typing import Dict, Any, Iterable, Optional
 from pathlib import Path
@@ -1071,6 +1072,13 @@ def get_cursor_status():
 
         # 检查窗口状态（是否为前台应用）
         window_status = automation.is_cursor_frontmost()
+        # 确保window_status是字典格式，如果不是则转换为标准格式
+        if not isinstance(window_status, dict):
+            window_status = {
+                'is_front': False,
+                'error': 'Invalid return type from is_cursor_frontmost',
+                'status': 'error'
+            }
         
         # 检查对话框状态 - 使用workbench.auxiliaryBar.hidden检查
         dialog_status = {
@@ -1145,6 +1153,36 @@ def get_cursor_status():
         logger.error(f"Error in get_cursor_status: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/test-cursor-status', methods=['GET'])
+def test_cursor_status():
+    """测试 Cursor 状态检测的调试端点"""
+    try:
+        import sys
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+
+        from pyautogu import CursorAutomation
+
+        automation = CursorAutomation()
+        
+        # 直接测试状态检测
+        cursor_status = automation.is_cursor_frontmost()
+        
+        return jsonify({
+            "raw_result": cursor_status,
+            "type": str(type(cursor_status)),
+            "is_front": cursor_status.get('is_front') if isinstance(cursor_status, dict) else None,
+            "extracted_active": cursor_status.get('is_front', False) if isinstance(cursor_status, dict) else False
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
 @app.route('/api/cursor-status', methods=['GET'])
 def get_cursor_status_simple():
     """获取Cursor状态的简化版本，用于前端定时检查"""
@@ -1168,7 +1206,15 @@ def get_cursor_status_simple():
             logger.warning("对话框状态检测失败: workspace_id 参数是必需的，不能为空")
         
         # 检查窗口状态（是否为前台应用）
-        is_active = automation.is_cursor_frontmost()
+        try:
+            cursor_status = automation.is_cursor_frontmost()
+            logger.info(f"原始状态检测结果: {cursor_status}")
+            is_active = cursor_status.get('is_front', False) if isinstance(cursor_status, dict) else False
+            logger.info(f"提取的 is_active: {is_active}, 类型: {type(is_active)}")
+        except Exception as status_error:
+            logger.error(f"状态检测异常: {status_error}")
+            cursor_status = {'is_front': False, 'error': str(status_error)}
+            is_active = False
         
         # 检查对话框状态
         dialog_state = automation.detect_dialog_state(workspace_id)
@@ -1447,6 +1493,41 @@ def get_sidebar_status():
     except Exception as e:
         logger.error(f"Error checking sidebar status: {e}")
         return jsonify({"error": f"Failed to check sidebar status: {str(e)}"}), 500
+
+@app.route('/api/workspace/<workspace_id>/info', methods=['GET'])
+def get_workspace_info(workspace_id):
+    """获取工作空间信息"""
+    try:
+        logger.info(f"Received workspace info request for: {workspace_id}")
+        
+        # 获取Cursor根目录
+        base = cursor_root()
+        workspace_storage = base / "User" / "workspaceStorage"
+        
+        # 构建workspace数据库路径
+        workspace_db = workspace_storage / workspace_id / "state.vscdb"
+        
+        if not workspace_db.exists():
+            return jsonify({"error": f"Workspace database not found: {workspace_id}"}), 404
+        
+        # 获取工作空间信息
+        project_info, composer_meta = workspace_info(workspace_db)
+        
+        logger.info(f"Workspace info for {workspace_id}: {project_info}")
+        
+        return jsonify({
+            "success": True,
+            "workspace_id": workspace_id,
+            "project": {
+                "name": project_info.get("name", "Unknown Project"),
+                "rootPath": project_info.get("rootPath", "/unknown/path")
+            },
+            "composers": composer_meta
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting workspace info: {e}")
+        return jsonify({"error": f"Failed to get workspace info: {str(e)}"}), 500
 
 
 

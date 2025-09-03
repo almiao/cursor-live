@@ -4,7 +4,8 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 
 import ChatList from './components/ChatList';
-import ChatDetail from './components/ChatDetail';
+import ChatHistory from './components/ChatHistory';
+import NewChat from './components/NewChat';
 import Header from './components/Header';
 
 
@@ -165,8 +166,8 @@ function App() {
         <Header />
         <Routes>
           <Route path="/" element={<ChatList />} />
-          <Route path="/chat/new/:workspaceId" element={<ChatDetail />} />
-          <Route path="/chat/:sessionId" element={<ChatDetail />} />
+          <Route path="/chat/new/:workspaceId" element={<NewChat />} />
+          <Route path="/chat/:sessionId" element={<ChatHistory />} />
         </Routes>
       </Router>
     </ThemeProvider>

@@ -55,7 +55,7 @@ class CursorAutomation:
 
     def is_cursor_frontmost(self) -> Dict[str, Any]:
         """
-        检查Cursor是否为前台应用
+        检查Cursor是否为前台应用 - 使用多种检测方法
 
         Returns:
             Dict[str, Any]: 检查结果
@@ -69,14 +69,66 @@ class CursorAutomation:
 
         try:
             logger.info("检查Cursor是否为前台应用...")
+            
+            # 方法1: 使用 NSWorkspace (原始方法)
+            logger.info("方法1: 使用 NSWorkspace 检测...")
+            method1_result = self._check_frontmost_nsworkspace()
+            logger.info(f"方法1结果: {method1_result}")
+            
+            # 方法2: 使用 psutil 检查进程
+            logger.info("方法2: 使用 psutil 检查进程...")
+            method2_result = self._check_frontmost_psutil()
+            logger.info(f"方法2结果: {method2_result}")
+            
+            # 方法3: 使用 osascript 检查
+            logger.info("方法3: 使用 osascript 检查...")
+            method3_result = self._check_frontmost_osascript()
+            logger.info(f"方法3结果: {method3_result}")
+            
+            # 综合判断：如果多个方法都检测到 Cursor，则认为是前台应用
+            cursor_detected_count = 0
+            total_methods = 3
+            
+            if method1_result.get('is_front', False):
+                cursor_detected_count += 1
+            if method2_result.get('is_front', False):
+                cursor_detected_count += 1
+            if method3_result.get('is_front', False):
+                cursor_detected_count += 1
+            
+            # 如果至少2个方法检测到 Cursor，则认为它是前台应用
+            is_cursor_front = cursor_detected_count >= 2
+            
+            logger.info(f"综合检测结果: {cursor_detected_count}/{total_methods} 方法检测到 Cursor, 最终结果: {is_cursor_front}")
+            
+            return {
+                'is_front': is_cursor_front,
+                'front_app': method1_result.get('front_app', 'Unknown'),
+                'bundle_id': method1_result.get('bundle_id', 'Unknown'),
+                'status': 'success',
+                'method1': method1_result,
+                'method2': method2_result,
+                'method3': method3_result,
+                'detection_summary': f"{cursor_detected_count}/{total_methods} methods detected Cursor"
+            }
 
+        except Exception as e:
+            logger.error(f"检查前台应用时发生异常: {e}")
+            return {
+                'is_front': False,
+                'error': str(e),
+                'status': 'error'
+            }
+    
+    def _check_frontmost_nsworkspace(self) -> Dict[str, Any]:
+        """方法1: 使用 NSWorkspace 检测前台应用"""
+        try:
             ws = NSWorkspace.sharedWorkspace()  # type: ignore
             if not ws:
-                logger.error("无法获取NSWorkspace实例")
                 return {
                     'is_front': False,
                     'error': 'Cannot get NSWorkspace instance',
-                    'status': 'error'
+                    'method': 'NSWorkspace'
                 }
 
             frontmost_app = ws.frontmostApplication()  # type: ignore
@@ -84,8 +136,6 @@ class CursorAutomation:
             if frontmost_app:
                 app_name = frontmost_app.localizedName()
                 bundle_id = frontmost_app.bundleIdentifier()
-
-                logger.info(f"前台应用: {app_name} (Bundle ID: {bundle_id})")
 
                 is_cursor_front = (
                         (app_name and "Cursor" in app_name) or
@@ -96,22 +146,104 @@ class CursorAutomation:
                     'is_front': is_cursor_front,
                     'front_app': app_name,
                     'bundle_id': bundle_id,
-                    'status': 'success'
+                    'method': 'NSWorkspace'
                 }
             else:
-                logger.warning("无法获取前台应用信息")
                 return {
                     'is_front': False,
                     'error': 'Cannot get frontmost application',
-                    'status': 'error'
+                    'method': 'NSWorkspace'
                 }
 
         except Exception as e:
-            logger.error(f"检查前台应用时发生异常: {e}")
             return {
                 'is_front': False,
                 'error': str(e),
-                'status': 'error'
+                'method': 'NSWorkspace'
+            }
+    
+    def _check_frontmost_psutil(self) -> Dict[str, Any]:
+        """方法2: 使用 psutil 检查进程"""
+        try:
+            import psutil
+            
+            # 获取所有进程
+            processes = psutil.process_iter(['pid', 'name', 'cmdline'])
+            
+            cursor_processes = []
+            for proc in processes:
+                try:
+                    if proc.info['name'] and 'cursor' in proc.info['name'].lower():
+                        cursor_processes.append({
+                            'pid': proc.info['pid'],
+                            'name': proc.info['name'],
+                            'cmdline': proc.info['cmdline']
+                        })
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            
+            # 检查是否有 Cursor 进程在运行
+            is_cursor_running = len(cursor_processes) > 0
+            
+            return {
+                'is_front': is_cursor_running,
+                'cursor_processes': cursor_processes,
+                'method': 'psutil'
+            }
+            
+        except ImportError:
+            return {
+                'is_front': False,
+                'error': 'psutil not available',
+                'method': 'psutil'
+            }
+        except Exception as e:
+            return {
+                'is_front': False,
+                'error': str(e),
+                'method': 'psutil'
+            }
+    
+    def _check_frontmost_osascript(self) -> Dict[str, Any]:
+        """方法3: 使用 osascript 检查前台应用"""
+        try:
+            script = '''
+            tell application "System Events"
+                set frontApp to name of first application process whose frontmost is true
+                return frontApp
+            end tell
+            '''
+            
+            result = subprocess.run(['osascript', '-e', script], 
+                                   capture_output=True, text=True, timeout=5)
+            
+            if result.returncode == 0:
+                front_app_name = result.stdout.strip()
+                is_cursor_front = 'cursor' in front_app_name.lower()
+                
+                return {
+                    'is_front': is_cursor_front,
+                    'front_app': front_app_name,
+                    'method': 'osascript'
+                }
+            else:
+                return {
+                    'is_front': False,
+                    'error': f'osascript failed: {result.stderr}',
+                    'method': 'osascript'
+                }
+                
+        except subprocess.TimeoutExpired:
+            return {
+                'is_front': False,
+                'error': 'osascript timeout',
+                'method': 'osascript'
+            }
+        except Exception as e:
+            return {
+                'is_front': False,
+                'error': str(e),
+                'method': 'osascript'
             }
         
     def detect_dialog_state(self, workspace_id: str) -> str:
@@ -372,10 +504,7 @@ class CursorAutomation:
             logger.info("确保Cursor是活动窗口...")
             if not self.activate_cursor():
                 logger.warning("无法激活Cursor窗口，但继续尝试发送快捷键")
-            
-            pyautogui.hotkey(self.modifier, 'i')
-            logger.info("command+I完成")
-            
+
             if workspace_id:
                 # 发送命令前先检测并记录当前状态
                 initial_state = self.detect_dialog_state(workspace_id)
@@ -387,59 +516,28 @@ class CursorAutomation:
                 
                 # 增加等待时间，确保界面稳定
                 logger.info("等待界面稳定...")
-                time.sleep(3)
+                time.sleep(1)
                 
                 # 尝试多种方式发送快捷键
                 success = False
                 
                 # # 方法1: 使用pyautogui.hotkey
-                # try:
-                #     logger.info(f"尝试方法1: 使用 {self.modifier}+i 快捷键")
-                #     pyautogui.hotkey(self.modifier, 'i')
-                #     logger.info(f"已发送快捷键 {self.modifier}+i 打开聊天对话框")
-                #     success = True
-                # except Exception as e:
-                #     logger.warning(f"方法1失败: {e}")
-                
-                # 方法2: 如果方法1失败，尝试使用press
-                if not success:
-                    try:
-                        logger.info("尝试方法2: 使用press方法")
-                        if self.system == 'Darwin':
-                            pyautogui.keyDown('command')
-                            pyautogui.press('i')
-                            pyautogui.keyUp('command')
-                        else:
-                            pyautogui.keyDown('ctrl')
-                            pyautogui.press('i')
-                            pyautogui.keyUp('ctrl')
-                        logger.info("已通过press方法发送快捷键")
-                        success = True
-                    except Exception as e:
-                        logger.warning(f"方法2失败: {e}")
-                
-                # 方法3: 如果都失败，尝试使用typewrite
-                if not success:
-                    try:
-                        logger.info("尝试方法3: 使用typewrite方法")
-                        if self.system == 'Darwin':
-                            pyautogui.typewrite(['i'], interval=0.1)
-                        else:
-                            pyautogui.typewrite(['i'], interval=0.1)
-                        logger.info("已通过typewrite方法发送快捷键")
-                        success = True
-                    except Exception as e:
-                        logger.warning(f"方法3失败: {e}")
+                try:
+                    logger.info(f"尝试方法1: 使用 {self.modifier}+i 快捷键")
+                    pyautogui.hotkey(self.modifier, 'i')
+                    logger.info(f"已发送快捷键 {self.modifier}+i 打开聊天对话框")
+                    success = True
+                except Exception as e:
+                    logger.warning(f"方法1失败: {e}")
+
                 
                 if success:
                     # 等待对话框打开
                     logger.info("等待对话框打开...")
-                    time.sleep(2)
-                    
+                    time.sleep(1)
                     # 验证对话框是否真的打开了
                     final_state = self.detect_dialog_state(workspace_id)
                     logger.info(f"发送快捷键后的对话框状态: {final_state}")
-                    
                     if final_state == "dialogue":
                         logger.info("对话框打开成功！")
                         return True
@@ -803,7 +901,6 @@ class CursorAutomation:
             
             if not os.path.exists(root_path):
                 logger.warning(f"目标路径不存在: {root_path}")
-                # Still try to proceed, as Cursor might handle it
             
             if self.system == 'Darwin':
                 logger.info("执行方式: macOS Terminal + AppleScript")
@@ -828,14 +925,14 @@ class CursorAutomation:
                 tell application "Terminal"
                     activate
                     do script "cursor '{root_path}'"
-                    delay 3
+                    delay 1
                     quit
                 end tell
                 '''
                 result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
                 if result.returncode == 0:
                     logger.info(f"✓ 成功在Terminal中执行: cursor '{root_path}'")
-                    time.sleep(5)
+                    time.sleep(1)
                     return True
                 else:
                     logger.error(f"✗ Terminal脚本执行失败: {result.stderr}")
@@ -917,7 +1014,7 @@ def create_new_chat_in_cursor(workspace_id: str = None, force_restart: bool = Fa
                 close_result = subprocess.run(['osascript', '-e', close_script], capture_output=True, text=True)
                 if close_result.returncode == 0:
                     logger.info("✓ 成功关闭Cursor")
-                    time.sleep(2)  # 等待Cursor完全关闭
+                    time.sleep(1)  # 等待Cursor完全关闭
                 else:
                     logger.warning(f"关闭Cursor时出现警告: {close_result.stderr}")
             else:
@@ -926,7 +1023,6 @@ def create_new_chat_in_cursor(workspace_id: str = None, force_restart: bool = Fa
         # 2. 激活Cursor
         logger.info("步骤2: 激活Cursor")
         automator.activate_cursor()
-        time.sleep(2)
 
         # 3. 打开AI对话栏（Command+I）
         logger.info("步骤3: 打开AI对话栏")
