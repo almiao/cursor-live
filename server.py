@@ -1208,7 +1208,6 @@ def get_cursor_status_simple():
         # 检查窗口状态（是否为前台应用）
         try:
             cursor_status = automation.is_cursor_frontmost()
-            logger.info(f"原始状态检测结果: {cursor_status}")
             is_active = cursor_status.get('is_front', False) if isinstance(cursor_status, dict) else False
             logger.info(f"提取的 is_active: {is_active}, 类型: {type(is_active)}")
         except Exception as status_error:
